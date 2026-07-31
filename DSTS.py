@@ -842,7 +842,7 @@ class TextureStudio(QMainWindow):
                     print(layout)
                     if not (layout != BLANK_PATH and layout.exists()):
                         layout = None
-                        showError("Layout file doesn't exist. Loading raw atlases instead.", "Warning", _type=QMessageBox.Warning)
+                        logger.warning("Layout file for %s is either an invalid path or wasn't returned on prompt. Atlases will not be processed.", tpf.name)
 
                 if layout is not None:
                     file_mappings.append({"file": tpf, "layout": layout})
@@ -868,7 +868,7 @@ class TextureStudio(QMainWindow):
                         layout = Path(QFileDialog.getOpenFileName(None, "Navigate to corresponding sblytbnd.dcx", "", "Layout Files (*.sblytbnd.dcx)")[0])
                         if not (layout != BLANK_PATH and layout.exists()):
                             layout = None
-                            showError("Layout file doesn't exist. Loading raw atlases instead.", "Warning", _type=QMessageBox.Warning)
+                            logger.warning("Layout file for %s is either an invalid path or wasn't returned on prompt. Atlases will not be processed.", base_name)
 
                 if layout is not None:
                     file_mappings.append({"file": f, "layout": layout})
