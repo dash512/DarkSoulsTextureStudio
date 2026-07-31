@@ -58,6 +58,16 @@ class Resolution(Enum):
             Resolution.LOW: "Low"
         }[self]
 
+    @classmethod
+    def from_str(cls, text) -> "Resolution":
+        match text:
+            case "Hi"|"High":
+                return cls.HI
+            case "Low":
+                return cls.LOW
+            case _:
+                raise ValueError("Value should be str(hi/low/high)")
+
 class BackgroundMode(IntEnum):
     BLACK = 0
     WHITE = 1

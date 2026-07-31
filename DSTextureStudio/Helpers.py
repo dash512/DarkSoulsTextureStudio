@@ -3,7 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import QFileDialog
-from DSTextureStudio.Enums import Game
+from DSTextureStudio.Enums import Game, Resolution
 from DSTextureStudio.GUI import gameTypeDialog, InvalidImagePrompt
 from DSTextureStudio.GameInfo import LAYOUT_PATHS
 from DSTextureStudio.Utilities import path_has_sequence, checkBlockSize, align_up, tupleAdd
@@ -191,5 +191,14 @@ def validateImageForSwizzle(img: Image.Image, parent_dims: tuple = (0, 0), paddi
             with Image.open(filename) as new_img:
                 return validateImageForSwizzle(new_img.copy(), parent_dims=parent_dims, padding=padding)
 
+    return None
+
+def getResFromLytPath(path: Path|str) -> Resolution:
+    if isinstance(path, str):
+        path = Path(path)
+
+    for r in ["Hi", "Low", "High"]:
+        if path_has_sequence(path.parts, [r]):
+            return Resolution.from_str(r)
     return None
 

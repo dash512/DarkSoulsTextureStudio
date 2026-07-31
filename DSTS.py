@@ -827,7 +827,7 @@ class TextureStudio(QMainWindow):
 
                 if len(available) > 1:
                     ok, choice = showSelectOptions("Select Resolution", f"{prefix} has both high and low resolution. Which do you want?", 
-                                                        [i.display   for i in available])
+                                                   [i.display for i in available])
                     if not ok:
                         return
                     choice = next(r for r in available if r.name == choice)
@@ -838,19 +838,16 @@ class TextureStudio(QMainWindow):
                 layout = data[choice].get("layout")
 
                 if tpf and not layout and ('_common_' in Path(tpf).stem):
-                    layout_path = QFileDialog.getOpenFileName(self, f"Select layout for {tpf.name}", str(tpf.parent), "Layout Files (*.sblytbnd.dcx)")[0]
+                    layout = Path(QFileDialog.getOpenFileName(self, f"Select layout for {tpf.name}", str(tpf.parent), "Layout Files (*.sblytbnd.dcx)")[0])
+                    print(layout)
+                    if not (layout != BLANK_PATH and layout.exists()):
+                        layout = None
+                        showError("Layout file doesn't exist. Loading raw atlases instead.", "Warning", _type=QMessageBox.Warning)
 
-                    if layout_path:
-                        layout = Path(layout_path)
-                    else:
-                        showError("Layout file doesn't exist. Loading raw atlases instead.")
-
-                if layout:
+                if layout is not None:
                     file_mappings.append({"file": tpf, "layout": layout})
                 else:
                     file_mappings.append(tpf)
-                
-                self.RESOLUTIONS[prefix] = choice
 
             file_mappings.extend(standalone) # no layout
 
@@ -869,17 +866,15 @@ class TextureStudio(QMainWindow):
                         layout = try_lyt
                     else:
                         layout = Path(QFileDialog.getOpenFileName(None, "Navigate to corresponding sblytbnd.dcx", "", "Layout Files (*.sblytbnd.dcx)")[0])
+                        if not (layout != BLANK_PATH and layout.exists()):
+                            layout = None
+                            showError("Layout file doesn't exist. Loading raw atlases instead.", "Warning", _type=QMessageBox.Warning)
 
-                        if not layout.exists():
-                            showError("Layout file doesn't exist!")
-                            return
-
-                if layout:
+                if layout is not None:
                     file_mappings.append({"file": f, "layout": layout})
                 else:
                     file_mappings.append(f)
 
-                self.RESOLUTIONS[base_name] = Resolution.LOW if path_has_sequence(f.parts, ['menu', 'low']) else Resolution.HI
         else:
             file_mappings = files
 
@@ -902,7 +897,7 @@ class TextureStudio(QMainWindow):
         self.thread.started.connect(self.worker.run)
         self.thread.start()
 
-    def loadDone(self, atlases, LOADED_DCX_FILES, LAYOUT_DATA, msg):
+    def loadDone(self, atlases, LOADED_DCX_FILES, LAYOUT_DATA, RESOLUTIONS, msg):
         """Stuff to do on successful load of files."""
         self.progress_dialog.close()
 
@@ -913,6 +908,7 @@ class TextureStudio(QMainWindow):
         self.atlases = atlases
         self.LOADED_DCX_FILES = LOADED_DCX_FILES
         self.LAYOUT_DATA = LAYOUT_DATA
+        self.RESOLUTIONS = RESOLUTIONS
 
         self.atlas_list.clear()
         for name, _atlas in atlases.items():

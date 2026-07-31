@@ -19,7 +19,7 @@ from soulstruct.base.textures.dds.swizzle import swizzle_dds_bytes_ps4
 # Custom
 from DSTextureStudio.Dataclasses import AtlasLayout, Atlas, SubTexture
 from DSTextureStudio.Enums import ExportMode, Resolution, Game, GameType
-from DSTextureStudio.Helpers import createDebugGrid, getLayoutData
+from DSTextureStudio.Helpers import createDebugGrid, getLayoutData, getResFromLytPath
 from DSTextureStudio.log_utils import format_exc_clean
 from DSTextureStudio.Utilities import replaceTerms, loadJson
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 class LoadWorker(QObject):
     progress = Signal(int, str)   # percent, message
-    finished = Signal(object, object, object, str)  # atlases, loaded dcx files, parsed xml data, error msg
+    finished = Signal(object, object, object, object, str)  # atlases, loaded dcx files, parsed xml data, resolutions, error msg
 
     def __init__(self, file_mappings, game: Game):
         super().__init__()
@@ -35,6 +35,7 @@ class LoadWorker(QObject):
         self.game = game
         self.LOADED_DCX_FILES = {}
         self.LAYOUT_DATA = {}
+        self.RESOLUTONS = {}
 
     def run(self):
         try:
@@ -50,7 +51,7 @@ class LoadWorker(QObject):
                     logger.info("Unknown game type %s, defaulting to Legacy", self.game)
                     self.processLegacy()
         except:
-            self.finished.emit({}, {}, {}, format_exc_clean())
+            self.finished.emit({}, {}, {}, {}, format_exc_clean())
 
     def handleUnpack(self, path):
         if self.game.type == GameType.PS:
@@ -114,16 +115,18 @@ class LoadWorker(QObject):
         for f_idx, file in enumerate(self.file_mappings, 1):
             percent = int(f_idx / total_files * 100 - 1)
             if isinstance(file, dict):
+                _file: Path = file['file']
                 layout_path = file['layout']
-                textures_dict: dict = self.generateTextDict(file['file'], percent)
+                textures_dict: dict = self.generateTextDict(_file, percent)
 
                 layout_xml = getLayoutData(layout_path)
                 root = ET.fromstring(layout_xml, parser=ET.XMLParser(encoding="utf-8"))
                 self.progress.emit(percent, "Parsing layout XML...")
 
                 atlas_layouts = [AtlasLayout.from_element(el) for el in root.findall("TextureAtlas")]
-                self.LAYOUT_DATA[file['file']] = atlas_layouts
-
+                self.LAYOUT_DATA[_file] = atlas_layouts
+                fname = replaceTerms(_file.name, {".tpf.dcx": ""})
+                self.RESOLUTONS[fname] = getResFromLytPath(atlas_layouts[0].imagePath)
 
                 layout_lookup = {
                     Path(atlas.imagePath).stem: atlas
@@ -169,7 +172,7 @@ class LoadWorker(QObject):
                 logger.info("Successfully loaded %i atlases with no layouts.", len(atlases))
 
         logger.info("Load Worker process completed succesfully!")
-        self.finished.emit(atlases, self.LOADED_DCX_FILES, self.LAYOUT_DATA, "")
+        self.finished.emit(atlases, self.LOADED_DCX_FILES, self.LAYOUT_DATA, self.RESOLUTONS, "")
         self.progress.emit(100, 'Successfully loaded all files!')
 
     def processLegacy(self):  
@@ -221,7 +224,7 @@ class LoadWorker(QObject):
                     self.progress.emit(percent, f"Processed {name}")
 
         logger.info("Load Worker process completed succesfully with %i atlaes loaded!", len(atlases))
-        self.finished.emit(atlases, self.LOADED_DCX_FILES, {}, "")
+        self.finished.emit(atlases, self.LOADED_DCX_FILES, {}, {}, "")
 
 class ExtractWorker(QObject):
     progress = Signal(int, str) # percent, message
