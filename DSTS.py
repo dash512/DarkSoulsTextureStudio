@@ -543,11 +543,18 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
+        atlas = self.atlases[atlas_name]
 
-        self.pending_new_atlases = [a for a in self.pending_new_atlases if a.name != atlas_name]
-        self.thumbnail_cache.pop(atlas_name, None)
+        if atlas.vanilla:
+            atlas.is_delete = True
 
-        self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
+        else:
+            self.pending_new_atlases = [a for a in self.pending_new_atlases if a.name != atlas_name]
+            self.thumbnail_cache.pop(atlas_name, None)
+
+            self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
+
+        self.reloadHighlighting()
 
     def renameAtlas(self, atlas_item):
         if not atlas_item:
@@ -1384,29 +1391,29 @@ class TextureStudio(QMainWindow):
             items = [self.atlas_list.item(x) for x in range(self.atlas_list.count())]
 
         for item in items:
-            match self.isModified(item.data(Qt.UserRole), None):
-                case Modified.ADDED:
-                    item.setForeground(Qt.green)
-                case Modified.REPLACED:
-                    item.setForeground(Qt.yellow)
-                case Modified.FALSE:
-                    item.setForeground(Qt.white)
+            item.setForeground(self.isModified(item.data(Qt.UserRole), None))
 
     def isModified(self, atlas_name, sub_name=None):
         """Returns True if subtexture has been modified, for recoloring its entry."""
         atlas: Atlas = self.atlases.get(atlas_name)
 
         if sub_name is None: # atlas check
-            if atlas.additions or atlas.replacements:
+            if atlas.is_delte:
+                return Modified.DELETED
+            
+            if atlas.modified:
                 return Modified.REPLACED # not actually replaced, but it gets colored yellow cuz subitems are modified
             
-            if findLast(atlas.replacements, Image.Image) is not None:
+            if atlas.override is not None:
                 return Modified.REPLACED
 
             if any(atlas_name == atlas.name for atlas in self.pending_new_atlases):
                 return Modified.ADDED
 
             return Modified.FALSE
+
+        if atlas.match(sub_name).is_delete:
+            return Modified.DELETED
 
         if atlas.match(sub_name, "additions")[1] is not None:
             return Modified.ADDED
@@ -1439,12 +1446,7 @@ class TextureStudio(QMainWindow):
             item = NaturalListItem(name)
             item.setData(Qt.UserRole, name)
             item.setSizeHint(QSize(0, 30))
-
-            match self.isModified(atlas_name, name):
-                case Modified.REPLACED:
-                    item.setForeground(Qt.yellow)
-                case Modified.ADDED:
-                    item.setForeground(Qt.green)
+            item.setForeground(self.isModified(atlas_name, name))
 
             self.subtexture_list.addItem(item)
         

@@ -10,9 +10,10 @@ class GameType(Enum):
     PS = auto()
 
 class Modified(Enum):
-    FALSE = auto()
-    ADDED = auto()
-    REPLACED = auto()
+    FALSE = "#FFFFFF"
+    ADDED = "#00FF00"
+    REPLACED = "#FFFF00"
+    DELETED = "#FF0000"
 
 class ImageType(Enum):
     Atlas = auto()

@@ -183,14 +183,15 @@ class Atlas:
     name: str
     parent: Optional[Path] # when None, is written as a standalone file 
 
+    vanilla: Optional[bool] = False # set to True on load. Custom are False
+    override: Optional[Image.Image] = None # full self atlas replacement
+
     texture: Optional[TPFTexture|Image.Image] = None # Image is allowed for making Deltas
     dimensions: Optional[tuple[int, int]] = None # only needed for custom Atlases, used for writing TextureAtlas xml properties
 
     subtextures: list[SubTexture] = field(default_factory=list)
 
-    # Modifications
-    replacements: list[SubTexture|Image.Image] = field(default_factory=list)
-    additions: list[SubTexture] = field(default_factory=list)
+    is_delete: Optional[bool] = False # DSTS flag to skip entire atlas when saving
 
     # region Properties
     @property
@@ -217,6 +218,14 @@ class Atlas:
         return Image.open(BytesIO(dds)).convert("RGBA")
 
     @property
+    def additions(self) -> list[SubTexture]:
+        return [sub for sub in self.subtextures if sub.vanilla == False]
+
+    @property
+    def replacements(self) -> list[SubTexture]:
+        return [sub for sub in self.subtextures if sub.override is not None]
+    
+    @property
     def modified(self) -> bool:
         return (self.replacements or self.additions)
 
@@ -231,7 +240,7 @@ class Atlas:
     @property
     def isAtlas(self) -> bool:
         return bool(self.subtextures)
-    
+
     # region Helpers
     def rename(self, new_name) -> bool:
         """Renames Atlas object. Returns True if successful"""
@@ -264,7 +273,7 @@ class Atlas:
             all_subs += self.subtextures
 
         sub_map = {i.name: i for i in all_subs}
-        sub_map.update({i.name: i for i in self.replacements if isinstance(i, SubTexture)})
+        sub_map.update({i.name: i for i in self.replacements})
 
         return list(sub_map.values())
 
@@ -318,7 +327,7 @@ class Atlas:
             else:
                 target = self.replacements
 
-            existing = next((idx for idx,s in enumerate(target) if isinstance(s, SubTexture) and s.name==sub.name), None)
+            existing = next((idx for idx,s in enumerate(target) if s.name==sub.name), None)
             if existing is not None:
                 target.pop(existing)
 
@@ -335,6 +344,7 @@ class Atlas:
         for layout in layouts:
             yield Atlas(
                 name=layout.name,
+                vanilla=True,
                 parent=parent,
                 subtextures=[
                     SubTexture(
@@ -383,6 +393,7 @@ class Atlas:
 
             yield name, Atlas(
                 name=name,
+                vanilla=True,
                 texture=tex,
                 parent=parent_file,
                 subtextures=subtextures,
@@ -415,9 +426,8 @@ class Atlas:
 
             add.paste_into(IMG)
 
-        last_full_replacement = findLast(self.replacements, Image.Image)
-        if last_full_replacement is not None: # replacements contain an Image() object, entire atlas will be replaced
-            IMG = self.replacements[last_full_replacement]
+        if self.override is not None:
+            IMG = self.override
         else: # no full replacements, append subtexture replacements
             for rep in self.replacements:
                 rep.paste_into(IMG)
@@ -609,6 +619,8 @@ class SubTexture:
     width: int
     height: int
 
+    override: Optional[Image.Image] = None # self replacement.
+
     image: Optional[Image.Image] = None # is None for vanilla subtextures as can just be cropped from parent Atlas
 
     parent: Optional[str] = None # name of parent atlas
@@ -616,6 +628,8 @@ class SubTexture:
 
     blank: bool = False
     flag_half: Optional[bool] = False # what even is this bro
+
+    is_delete: Optional[bool] = False # DSTS flag to skip this subtexture when saving
 
     @property
     def pos(self) -> tuple[int, int]:
@@ -632,15 +646,19 @@ class SubTexture:
     def rename(self, new_name):
         self.name = new_name
 
+    def revert(self):
+        self.override = None
+
     def box(self, padding: int = 0) -> tuple[int, int, int, int]:
         """Return tuple of coordinates for a box to crop to this subtexture. Allows optional padding"""
         return (self.x - padding, self.y - padding, self.x + self.width + padding, self.y + self.height + padding)
     
     def paste_into(self, image: Image.Image, mask: Image.Image | None = None) -> None:
         """Pastes self into an image"""
-        if self.image is None:
+        sub_image = self.override or self.image
+        if sub_image is None:
             raise Exception("SubTexture object does not contain an image.")
-        image.paste(self.image, self.pos, mask=mask)
+        image.paste(sub_image, self.pos, mask=mask)
 
     def to_bytes(self) -> bytes:
         result = bytearray()

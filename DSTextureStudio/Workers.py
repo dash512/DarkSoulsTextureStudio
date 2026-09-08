@@ -129,7 +129,7 @@ class LoadWorker(QObject):
                 # add any textures that were not included in the layout
                 for texture in textures:
                     name = texture.stem
-                    atlases[name] = Atlas(name=name, texture=texture, parent=file, subtextures=[]) # no layout info since single textures go to atlases
+                    atlases[name] = Atlas(name=name, vanilla=True, texture=texture, parent=file, subtextures=[]) # no layout info since single textures go to atlases
                 logger.info("Successfully loaded %i atlases with no layouts.", len(atlases))
 
         logger.info("Load Worker process completed succesfully!")
@@ -146,7 +146,7 @@ class LoadWorker(QObject):
 
             for texture in textures:
                 name = texture.stem
-                atlases[name] = Atlas(name=name, texture=texture, parent=file, subtextures=[])
+                atlases[name] = Atlas(name=name, vanilla=True, texture=texture, parent=file, subtextures=[])
                 dds = texture.get_dds()
                 image = Image.open(BytesIO(dds.to_bytes())).convert("RGBA")
 
