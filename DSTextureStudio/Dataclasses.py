@@ -261,10 +261,15 @@ class Atlas:
         self.subtextures.clear()
         self.clearChanges()
         
-    def clearChanges(self):
+    def revert(self):
         """Clears all changes."""
-        self.additions.clear()
-        self.replacements.clear()
+        self.override = None
+        self.is_delete = False
+        for idx, sub in enumerate(self.subtextures):
+            if not sub.vanilla:
+                self.subtextures.pop(idx)
+
+            sub.revert()
 
     def allSubs(self, include_non_modified: bool = True) -> list[SubTexture]:
         """Returns a single list of SubTextures defining the whole atlas. Built from modifications."""
@@ -648,6 +653,7 @@ class SubTexture:
 
     def revert(self):
         self.override = None
+        self.is_delete = False
 
     def box(self, padding: int = 0) -> tuple[int, int, int, int]:
         """Return tuple of coordinates for a box to crop to this subtexture. Allows optional padding"""
