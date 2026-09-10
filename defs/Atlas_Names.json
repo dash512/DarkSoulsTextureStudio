@@ -1,7 +1,7 @@
 {          
 "Demon's Souls": {},
 
-"Dark Souls 1": {
+"Dark Souls: Remastered": {
     "00": "Title Screen",
     "01": "Title Screen",
     "02": "Title Screen",
@@ -66,7 +66,7 @@
     "title_select_character_06": "Black Knight"
 },
 
-"Dark Souls 2": {
+"Dark Souls II: Scholar of the First Sin": {
     "0000000010": "No Item",
     "0000000011": "None",
     "0000000012": "None",
@@ -1443,7 +1443,7 @@
     "0900010002": "None"
 },
 
-"Dark Souls 3": {
+"Dark Souls III": {
     "CN_TEX_Copyright": "Copyright Symbol",
     "CN_TEX_R_mark": "Registered Symbol",
     "CN_TEX_TradeMark": "Trademark Symbol",
@@ -3095,7 +3095,7 @@
     "MENU_Knowledge_01041": "Kos Parasite"
 },
 
-"Sekiro": {
+"Sekiro: Shadows Die Twice": {
     "SB_Boss": "Bosses",
     "SB_Boss_02": "Healing Tutorial?",
     "SB_Dialog": "Dialog",
@@ -3215,7 +3215,7 @@
     "MENU_Costume_503000": "Another's Memory: Tengu"
 },
 
-"Armored Core 6": {},
+"Armored Core VI: Fires of Rubicon": {},
     
 "Elden Ring": {
     "SB_BigRunes": "Great Runes",
@@ -5852,7 +5852,7 @@
     "MENU_Knowledge_4110": "Whirl- O Flame!"
 },
 
-"Nightreign": {
+"Elden Ring: Nightreign": {
     "SB_Common_0": "Menu Backgrounds",
     "SB_Condition_0": "Status Effect Icons",
     "SB_FE_0": "Misc HUD Elements",

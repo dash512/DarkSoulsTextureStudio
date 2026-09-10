@@ -17,6 +17,7 @@ The console is a new addition to DSTS, added in version 3.6.1. It allows viewing
  - atlases: Returns dict for internal `instance.atlases`. Maps atlas name to Atlas object.
  - cache: Prints preview image cache. Maps atlas name to PIL Image object. Internally, `instance.thumbnail_cache`.
  - changes: Returns ALL changes, same as calling `additions`, `replacements`, and `new`
+ - file: WindowsPath object to parent of currently selected atlas.
  - game: Returns currently loaded Game type. Internally, `instance.game`.
  - crop: Returns PIL Image object for subtexture preview. Atlases are None.
  - current: Returns name of currently selected atlas. Acts as a variable in commands.
@@ -30,8 +31,10 @@ The console is a new addition to DSTS, added in version 3.6.1. It allows viewing
 Commands and objects are seperated by spaces. Use [] for scripting/lookups and . for properties.
 
 ## Some Usage Examples:
-`ls atlases` - Lists the names of all loaded atlases.
-`repr atlases[Icon00]` or `atlases[current]` - Prints the Atlas object's __repr__(), giving useful info.
-`layouts[0][0].xml` - Since `layouts` is a dictionary, `[0]` will get all AtlasLayout objects from the first sblyt file. Another `[0]` selects only the first AtlasLayout. The `.xml` property returns its Element as text to the console, allowing you to see the xml before it's written.
-
+`ls atlases` - Lists the names of all loaded atlases.  
+  
+`repr atlases[Icon00]` or `atlases[current]` - Prints the Atlas object's __repr__(), giving useful info.  
+  
+`layouts[file][0].xml` - Since `layouts` is a dictionary, `[file]` will get all AtlasLayout objects from the current sblyt file. `[0]` selects only the first AtlasLayout. The `.xml` property returns its Element as text to the console, allowing you to see the xml before it's written.  
+  
 ![Console Examples](Images/Console-Usage-Examples.png)

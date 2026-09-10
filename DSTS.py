@@ -1,7 +1,6 @@
 from __future__ import annotations
 # Basic Modules
 import sys, shutil
-from io import BytesIO
 from pathlib import Path
 from collections import defaultdict
 from PIL import Image, UnidentifiedImageError
@@ -11,24 +10,25 @@ from typing import Optional
 from tempfile import NamedTemporaryFile
 # GUI
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QListWidget, QHBoxLayout, QFileDialog, QPushButton,
-QMessageBox, QSplitter, QProgressDialog, QInputDialog, QMenu)
+QMessageBox, QSplitter, QProgressDialog, QInputDialog, QMenu, QLineEdit)
 from PySide6.QtGui import QIcon, QDesktopServices, QAction
 from PySide6.QtCore import Qt, QThread, QUrl, QPoint, QTimer, QSize, Signal
 # Soulstruct
 from soulstruct.dcx import oodle
 from soulstruct.containers.tpf import TPF_TEXTURE_FORMAT_TO_DXGI_FORMAT, TPFTexture, TPFPlatform
 from soulstruct.base.textures.dds.enums import DXGI_FORMAT_BPP, DXGI_FORMAT
+from soulstruct.games import get_game, DEMONS_SOULS, DARK_SOULS_2, DARK_SOULS_2_SOTFS, BLOODBORNE, SEKIRO, ELDEN_RING, ARMORED_CORE_6, NIGHTREIGN
 # DSTS
 from DSTextureStudio.GameInfo import DXGI_STRUCT_MAP
 from DSTextureStudio.Dataclasses import Atlas, SubTexture
-from DSTextureStudio.Enums import Game, ImageType, IconMode, ExportMode, Resolution, Modified
-from DSTextureStudio.Helpers import checkGame, pil2Qpixmap, getFreeSpace, createBlankImage, createDebugGrid, cleanByAlpha, getPngSize, validateImageForSwizzle
+from DSTextureStudio.Enums import ImageType, IconMode, ExportMode, Resolution, Modified, GameType, DeltaMode, WriteTask
+from DSTextureStudio.Helpers import checkGame, getFreeSpace, createBlankImage, createDebugGrid, getPngSize, validateImageForSwizzle
 from DSTextureStudio.Workers import LoadWorker, WriteWorker, ExtractWorker
-from DSTextureStudio.GUI import (Delegate, ExpandableLabel, Palettes, SearchWindow, TextureListWidget, TextureNamePrompt, DefineSubtexturePrompt, ImageLabel,
-showError, showQuery, showSelectOptions, NaturalListItem, getOutputPath, CompressionPrompt)
+from DSTextureStudio.GUI import (Delegate, ExpandableLabel, Palettes, TextureListWidget, TextureNamePrompt, DefineSubtexturePrompt, ImageLabel,
+showError, showQuery, showSelectOptions, NaturalListItem, getOutputPath, CompressionPrompt, ProcessingBar, RadioButtonDialog, SubtextureSelectorWindow)
 from DSTextureStudio.log_utils import setuplog, addQtHandler, handle_exception, LogEmitter
 from DSTextureStudio.Console import ConsoleWindow
-from DSTextureStudio.Utilities import replaceTerms, path_has_sequence, loadJson, getDSTSdir
+from DSTextureStudio.Utilities import replaceTerms, loadJson, getDSTSdir, findLast
 
 BLANK_PATH = Path('.')
 
@@ -51,33 +51,37 @@ class TextureStudio(QMainWindow):
         self.current_crop = None
         self.current_atlas = None
         self.thumbnail_cache = {}
-        self.pending_replacements = {}
-        self.pending_additions = {}
-        self.pending_new_atlases = {}
-        self.RESOLUTIONS = {}
-        self.game = Game(None)
+        self.pending_new_atlases = []
+        self.game = get_game(None)
 
         self.console = ConsoleWindow(self, emitter=log_emitter)
         self.console.set_objects(
             instance=lambda: self,
             atlases=lambda: self.atlases,
             current=lambda: self.current_atlas,
+            file=lambda: self.atlas_list.currentItem().data(Qt.UserRole+1),
             game=lambda: self.game,
             crop=lambda: self.current_crop,
             cache=lambda: self.thumbnail_cache,
-            replacements=lambda: self.pending_replacements,
-            additions=lambda: self.pending_additions,
+            mods=lambda: [atlas.modifications for atlas in self.atlases.values() if atlas.modified],
             new=lambda: self.pending_new_atlases,
-            changes=lambda: {"replacements":self.pending_replacements, "additions":self.pending_additions, "custom":self.pending_new_atlases},
             loaded=lambda: self.LOADED_DCX_FILES,
             layouts=lambda: self.LAYOUT_DATA,
-            resolutions=lambda: self.RESOLUTIONS
         )
         self.createMenu()
 
         container = QWidget()
         layout = QHBoxLayout(container)
         splitter = QSplitter(Qt.Horizontal)
+
+        atlas_panel = QWidget()
+        atlas_layout = QVBoxLayout(atlas_panel)
+        atlas_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.atlas_search = QLineEdit()
+        self.atlas_search.setPlaceholderText("Search atlases...")
+        self.atlas_search.textEdited.connect(lambda text: self.filterList(text, self.atlas_list))
+        atlas_layout.addWidget(self.atlas_search)
 
         self.atlas_list = TextureListWidget()
         self.atlas_list.setItemDelegate(Delegate(self.atlas_list))
@@ -86,7 +90,18 @@ class TextureStudio(QMainWindow):
         self.atlas_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.atlas_list.customContextMenuRequested.connect(self.openSubtextureMenu)
         self.atlas_list.add_button.clicked.connect(self.addAtlas)
-        splitter.addWidget(self.atlas_list)
+        atlas_layout.addWidget(self.atlas_list)
+
+        splitter.addWidget(atlas_panel)
+
+        subtexture_panel = QWidget()
+        subtexture_layout = QVBoxLayout(subtexture_panel)
+        subtexture_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.subtexture_search = QLineEdit()
+        self.subtexture_search.setPlaceholderText("Search subtextures...")
+        self.subtexture_search.textEdited.connect(lambda text: self.filterList(text, self.subtexture_list))
+        subtexture_layout.addWidget(self.subtexture_search)
 
         self.subtexture_list = TextureListWidget(mode=ImageType.Subtexture, check_game=lambda: self.game)
         self.subtexture_list.setItemDelegate(Delegate(self.subtexture_list))
@@ -96,14 +111,16 @@ class TextureStudio(QMainWindow):
         self.subtexture_list.customContextMenuRequested.connect(self.openSubtextureMenu)
         self.subtexture_list.def_option.triggered.connect(lambda: self.addIcon(IconMode.Define))
         self.subtexture_list.add_option.triggered.connect(lambda: self.addIcon(IconMode.Append))
-        splitter.addWidget(self.subtexture_list)
+        subtexture_layout.addWidget(self.subtexture_list)
+
+        splitter.addWidget(subtexture_panel)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         self.preview_label = ImageLabel("Texture Preview", fetchimg=self.getPixmap)
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setStyleSheet("border: 1px solid gray; background: #222; color: white;")
-        self.preview_label.setMinimumSize(600, 400)
+        self.preview_label.setMinimumSize(600, 425)
         right_layout.addWidget(self.preview_label)
 
         self.info_label = ExpandableLabel("Texture Info", "Texture Info")
@@ -112,11 +129,11 @@ class TextureStudio(QMainWindow):
         self.info_label.setMinimumHeight(150)
         right_layout.addWidget(self.info_label)
 
-        self.save_button = QPushButton("Export Selected Texture")
+        self.save_button = QPushButton("Export Texture(s)")
         self.save_button.clicked.connect(self.saveSelection)
         right_layout.addWidget(self.save_button)
 
-        self.replace_button = QPushButton("Replace Selected Texture")
+        self.replace_button = QPushButton("Replace Texture")
         self.replace_button.clicked.connect(self.registerReplacement)
         right_layout.addWidget(self.replace_button)
 
@@ -125,8 +142,9 @@ class TextureStudio(QMainWindow):
         layout.addWidget(splitter)
         self.setCentralWidget(container)
 
+    # region GUI
     def hasPendingChanges(self):
-        return any((self.pending_additions, self.pending_replacements, self.pending_new_atlases))
+        return bool(self.pending_new_atlases or any(a.modified for a in self.atlases.values()))
 
     def closeEvent(self, event):
         if not self.hasPendingChanges():
@@ -152,19 +170,14 @@ class TextureStudio(QMainWindow):
         self.file_menu.addAction(createAction("Open File", lambda: self.openDcxDialog(dirmode=False)))
         self.file_menu.addAction(createAction("Open Directory", lambda: self.openDcxDialog(dirmode=True)))
         self.file_menu.addSeparator()
-        self.file_menu.addAction(createAction("Save As", self.applyChanges))
-        dump = self.file_menu.addMenu("Dump")
-        dump.addAction(createAction("Atlases", lambda: self.dumpTextures(mode=ExportMode.ATLAS)))
-        dump.addAction(createAction("Subtextures", lambda: self.dumpTextures(mode=ExportMode.SUBTEXTURE)))
+        self.file_menu.addAction(createAction("Save All", lambda: self.applyChanges(task=WriteTask.ALL)))
+        self.file_menu.addAction(createAction("Save TPF", lambda: self.applyChanges(task=WriteTask.TPF)))
+        self.file_menu.addAction(createAction("Save Layout", lambda: self.applyChanges(task=WriteTask.LYT)))
         self.file_menu.addSeparator()
-        self.file_menu.addAction(createAction("Clear", self.clear))
-        self.file_menu.addAction(createAction("Exit", self.close))
+        self.file_menu.addAction(createAction("Undo All Changes", self.undoChanges))
+        self.file_menu.addAction(createAction("Clear Workspace", self.clear))
 
         self.settings_menu = menu.addMenu("Settings")
-
-        self.btn_useCustomNames = QAction("Custom Names", self)
-        self.btn_useCustomNames.setCheckable(True)
-        self.btn_useCustomNames.toggled.connect(self.toggleCustomNames)
 
         self.btn_calcImageSize = QAction("Calculate Image Size", self)
         self.btn_calcImageSize.setCheckable(True)
@@ -181,15 +194,32 @@ class TextureStudio(QMainWindow):
         self.btn_alphaThreshold = QAction(f"Alpha Threshold = {self.alphaThreshold}", self)
         self.btn_alphaThreshold.triggered.connect(self.promptAlphaThreshold)
 
-        self.settings_menu.addAction(self.btn_useCustomNames)
         self.settings_menu.addAction(self.btn_hideBlankIcons)
         self.settings_menu.addAction(self.btn_calcImageSize)
         self.settings_menu.addAction(self.btn_atlasGrid)
         self.settings_menu.addSeparator()
         self.settings_menu.addAction(self.btn_alphaThreshold)
-        
-        self.searchButton = menu.addAction(createAction("Search", self.openSearchWindow))
 
+        self.tools_menu = menu.addMenu("Tools")
+        customnames = self.tools_menu.addMenu("Community Names")
+        self.btn_useCustomNames_atlas = QAction("Atlases", self)
+        self.btn_useCustomNames_atlas.setCheckable(True)
+        self.btn_useCustomNames_atlas.toggled.connect(lambda: self.toggleCustomNames(self.atlas_list))
+
+        self.btn_useCustomNames_subtextures = QAction("Subtextures", self)
+        self.btn_useCustomNames_subtextures.setCheckable(True)
+        self.btn_useCustomNames_subtextures.toggled.connect(lambda: self.toggleCustomNames(self.subtexture_list))
+
+        customnames.addAction(self.btn_useCustomNames_atlas)
+        customnames.addAction(self.btn_useCustomNames_subtextures)
+
+        deltapatch = self.tools_menu.addMenu("Merging")
+        deltapatch.addAction(createAction("Generate Delta", self.createDelta))
+        deltapatch.addAction(createAction("Import Delta", self.mergeDelta))
+        dump = self.tools_menu.addMenu("Dumpers")
+        dump.addAction(createAction("Atlases", lambda: self.dumpTextures(mode=ExportMode.ATLAS)))
+        dump.addAction(createAction("Subtextures", lambda: self.dumpTextures(mode=ExportMode.SUBTEXTURE)))
+        
         self.help_menu = menu.addMenu("Help")
         self.help_menu.addAction(createAction("Settings", lambda: QMessageBox.information(self, "Settings Info", "<b>Custom Names:</b><br> When enabled, this setting replaces" \
                                                                                                 " most atlas and subtexture names with more user-friendly ones. " \
@@ -227,6 +257,117 @@ class TextureStudio(QMainWindow):
         self.help_menu.addSeparator()
         self.help_menu.addAction(createAction("Console", self.console.show))
 
+    def filterList(self, text, widget):
+        text = text.lower()
+        for i in range(widget.count()):
+            item = widget.item(i)
+            item.setHidden(text not in item.text().lower())
+
+    def undoChanges(self):
+        answer = showQuery("Discard Changes?", "Are you sure you want to discard all changes?")
+        if answer != QMessageBox.Yes:
+            return
+        
+        self.pending_new_atlases = []
+        for a in self.atlases.values():
+            a.clearChanges()
+
+        self.atlas_list.setCurrentRow(0)
+        self.showAtlas(self.atlas_list.currentItem())
+        self.reloadHighlighting()
+
+    # region Actions
+    def createDelta(self):
+        self.checkOodleDLL()
+
+        if self.game.gametype != GameType.MODERN:
+            showError("This feature is only for modern games for now. Sorry!")
+            return
+
+        dlg = RadioButtonDialog(
+            "Delta Options",
+            "Choose delta creation mode.",
+            options={
+                0: "Create Delta from queued modifications",
+                1: "Create Delta from diffs against a vanilla file",
+                2: "Create Delta from custom selection"
+            },
+            default=1
+        )
+
+        if not dlg.exec():
+            return
+
+        match dlg.selected():
+            case 0: # from self mods
+                if not self.hasPendingChanges():
+                    showError("Current file has no pending changes!")
+                    return
+                
+                mode = DeltaMode.SELF
+                file_path = None
+
+            case 1: # diff against external file
+                mode = DeltaMode.DIFF
+                file_path = Path(QFileDialog.getOpenFileName(self, "Select Vanilla Layout File", "", "Shoebox Layout Files (*.sblytbnd.dcx);;All Files (*.*)")[0])
+                if not file_path or file_path == BLANK_PATH:
+                    logger.warning("%s is either an invalid path or wasn't returned on prompt. Delta creation aborted.", file_path.name)
+                    return          
+
+            case 2:
+                selector = SubtextureSelectorWindow("Select Subtextures", self.atlases)
+                if not selector.exec():
+                    return
+
+                output = Path(QFileDialog.getSaveFileName(self, "Save As", "", "Delta Patches (*.delta)")[0])
+
+                selected = selector.getSelected()
+                Atlas.writeDeltaFile(selected, path=output)
+                self.extractionDone(saved_path=output.parent)
+                return
+
+        output = Path(QFileDialog.getSaveFileName(self, "Save As", "", "Delta Patches (*.delta)")[0])
+
+        Atlas.generateDeltaFile(mode, list(self.atlases.values()), None, file_path, output)
+        self.extractionDone(saved_path=output.parent)
+
+    def mergeDelta(self):
+        if self.atlas_list.count() == 0:
+            showError("No files loaded!")
+            return
+        
+        file_path = Path(QFileDialog.getOpenFileName(self, "Select File", "", "Delta Patches (*.delta)")[0])
+        if not file_path or file_path == BLANK_PATH:
+            return
+
+        atlases = Atlas.readDeltaFile(file_path)
+
+        for atlas in atlases:
+            if atlas.name not in self.atlases:
+                dims = atlas.texture.size
+                with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                    temp_path = tmp.name
+                    atlas.texture.save(temp_path)
+
+                blank = TPFTexture(stem=atlas.name, mipmap_count=1, format=102, platform=TPFPlatform.PC) # TODO: don't assume?
+                blank.replace_dds(temp_path, dds_format="BC7_UNORM")
+
+                atlas.texture = blank 
+                atlas.dimensions = dims
+                self.pending_new_atlases.append(atlas)
+                continue
+
+            existing = self.atlases[atlas.name]
+
+            if atlas.isAtlas: # Atlas (duh)
+                existing.update(atlas)
+            else: # childless Texture type; replace entire texture
+                existing.replacements.append(atlas.texture)
+
+        self.atlas_list.setCurrentRow(0)
+        self.showAtlas(self.atlas_list.currentItem())
+        self.reloadHighlighting()
+
     def openSubtextureMenu(self, position: QPoint):
         sender = self.sender()
 
@@ -237,10 +378,9 @@ class TextureStudio(QMainWindow):
 
             current = self.atlas_list.currentItem()
             atlas_name = current.data(Qt.UserRole)
-            dcx_file = current.data(Qt.UserRole + 1)
             sub_name = item.data(Qt.UserRole)
 
-            modify = self.isModified(dcx_file, atlas_name, sub_name)
+            modify = self.isModified(atlas_name, sub_name)
             if modify == Modified.FALSE:
                 return
 
@@ -252,8 +392,9 @@ class TextureStudio(QMainWindow):
             menu = QMenu(self)
 
             if modify == Modified.ADDED:
-                menu.addAction("Delete", lambda: self.deleteSubtexture(item))
                 menu.addAction("Rename", lambda: self.renameSubtexture(item))
+                menu.addAction("Move", lambda: self.moveSubtexture(item))
+                menu.addAction("Delete", lambda: self.deleteSubtexture(item))
 
             elif modify == Modified.REPLACED:
                 menu.addAction("Revert", lambda: self.revertSubtexture(item))
@@ -266,9 +407,8 @@ class TextureStudio(QMainWindow):
                 return
 
             atlas_name = item.data(Qt.UserRole)
-            dcx_file = item.data(Qt.UserRole + 1)
 
-            modify = self.isModified(dcx_file, atlas_name)
+            modify = self.isModified(atlas_name)
             if modify == Modified.FALSE:
                 return
 
@@ -294,34 +434,24 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1)
         sub_name = sub_item.data(Qt.UserRole)
 
-        self.atlases.get(atlas_name, {}).rem(sub_name)
+        atlas: Atlas = self.atlases.get(atlas_name, {})
 
-        pending = self.pending_additions.get(dcx_file)
-        if pending:
-            pending["additions"] = [a for a in pending.get("additions", []) if a.name != sub_name]
-            if not pending["additions"]:
-                self.pending_additions.pop(dcx_file, None)
+        _,index = atlas.match(sub_name, attr="additions")
+        if index is not None:
+            atlas.additions.pop(index)
 
-        repls_file = self.pending_replacements.get(dcx_file, {})
-        repls_atlas = repls_file.get(atlas_name, {})
+        _,index = atlas.match(sub_name, attr="replacements")
+        if index is not None:
+            atlas.replacements.pop(index)
 
-        if sub_name in repls_atlas:
-            del repls_atlas[sub_name]
-
-        if repls_file and not repls_atlas:
-            repls_file.pop(atlas_name, None)
-        if dcx_file in self.pending_replacements and not repls_file:
-            self.pending_replacements.pop(dcx_file, None)
-
-        self.rebuildAtlas(atlas_name, dcx_file)
+        self.updateCache(atlas_name)
         self.subtexture_list.takeItem(self.subtexture_list.row(sub_item))
 
         items = [self.subtexture_list.item(i) for i in range(self.subtexture_list.count())]
 
-        if all(self.isModified(dcx_file, atlas_name, it.data(Qt.UserRole)) == Modified.FALSE for it in items):
+        if all(self.isModified(atlas_name, it.data(Qt.UserRole)) == Modified.FALSE for it in items):
             atlas_item.setForeground(Qt.white)
 
         self.showAtlas(atlas_item)
@@ -332,27 +462,21 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1)
         sub_name = sub_item.data(Qt.UserRole)
 
-        repls_file = self.pending_replacements.get(dcx_file, {})
-        repls_atlas = repls_file.get(atlas_name, {})
+        atlas: Atlas = self.atlases.get(atlas_name, {})
 
-        if sub_name in repls_atlas:
-            del repls_atlas[sub_name]
+        _,index = atlas.match(sub_name, attr="replacements")
+        if index is not None:
+            atlas.replacements.pop(index)
 
-        if not repls_atlas:
-            repls_file.pop(atlas_name, None)
-        if not repls_file:
-            self.pending_replacements.pop(dcx_file, None)
-
-        self.rebuildAtlas(atlas_name, dcx_file)
+        self.updateCache(atlas_name)
 
         sub_item.setForeground(Qt.white)
 
         items = [self.subtexture_list.item(i) for i in range(self.subtexture_list.count())]
 
-        if all(self.isModified(dcx_file, atlas_name, it.data(Qt.UserRole)) == Modified.FALSE for it in items):
+        if all(self.isModified(atlas_name, it.data(Qt.UserRole)) == Modified.FALSE for it in items):
             atlas_item.setForeground(Qt.white)
 
         self.showSubtexture(sub_item)
@@ -363,7 +487,6 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1)
         old_name = sub_item.data(Qt.UserRole)
 
         dialog = TextureNamePrompt(resizeprompt=False, halfprompt=False, padprompt=False)
@@ -376,59 +499,68 @@ class TextureStudio(QMainWindow):
             showError(f"A subtexture named '{new_name}' already exists!")
             return
 
-        self.atlases.get(atlas_name, {}).rename(old_name, new_name)
+        atlas: Atlas = self.atlases.get(atlas_name)
 
-        for info in self.pending_additions.values():
-            for a in info.get("additions", []):
-                if a.name == old_name:
-                    a.name = new_name
+        sub,_ = atlas.match(old_name, attr="additions")
+        if sub is not None:
+            sub.rename(new_name)
 
-        repls = self.pending_replacements.get(dcx_file, {}).get(atlas_name, {})
-        if old_name in repls:
-            repls[new_name] = repls.pop(old_name)
+        sub,_ = atlas.match(old_name, attr="replacements")
+        if sub is not None:
+            sub.rename(new_name)
 
         sub_item.setText(new_name)
         sub_item.setData(Qt.UserRole, new_name)
 
-        self.rebuildAtlas(atlas_name, dcx_file)
+        self.updateCache(atlas_name)
         self.showSubtexture(sub_item)
+
+    def moveSubtexture(self, sub_item):
+        atlas_item = self.atlas_list.currentItem()
+        if not atlas_item or not sub_item:
+            return
+
+        atlas_name = atlas_item.data(Qt.UserRole)
+        sub_name = sub_item.data(Qt.UserRole)
+
+        additions = self.atlases.get(atlas_name).additions
+
+        sub = next((s for s in additions if s.name == sub_name), None)
+        if sub is None:
+            return
+
+        dlg = DefineSubtexturePrompt(new=False)
+        if not dlg.exec():
+            return
+
+        sub.setpos(*dlg.get_result())
+
+        self.thumbnail_cache.pop(atlas_name, None)
+        self.showAtlas(atlas_item)
 
     def deleteAtlas(self, atlas_item):
         if not atlas_item:
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1) # do NOT ensure Path as custom is "None" as str
+        atlas = self.atlases[atlas_name]
 
-        pending = self.pending_new_atlases.get(dcx_file, [])
-        self.pending_new_atlases[dcx_file] = [a for a in pending if a.name != atlas_name]
+        if atlas.vanilla:
+            atlas.is_delete = True
 
-        if not self.pending_new_atlases[dcx_file]:
-            self.pending_new_atlases.pop(dcx_file, None)
+        else:
+            self.pending_new_atlases = [a for a in self.pending_new_atlases if a.name != atlas_name]
+            self.thumbnail_cache.pop(atlas_name, None)
 
-        add_data = self.pending_additions.get(dcx_file)
-        if add_data:
-            add_data["additions"] = [a for a in add_data["additions"] if a.parent != atlas_name]
+            self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
 
-            if not add_data["additions"]:
-                self.pending_additions.pop(dcx_file, None)
-
-        repls = self.pending_replacements.get(dcx_file, {})
-        repls.pop(atlas_name, None)
-
-        if not repls:
-            self.pending_replacements.pop(dcx_file, None)
-
-        self.thumbnail_cache.pop(atlas_name, None)
-
-        self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
+        self.reloadHighlighting()
 
     def renameAtlas(self, atlas_item):
         if not atlas_item:
             return
 
         old_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1) # do NOT ensure Path as custom is "None" as str
         dialog = TextureNamePrompt(mode=ImageType.Texture, formatprompt=False, blankprompt=False)
 
         if not dialog.exec():
@@ -440,30 +572,11 @@ class TextureStudio(QMainWindow):
             showError(f"An atlas named '{new_name}' already exists!")
             return
 
-        for atlases in self.pending_new_atlases.values():
-            for atlas in atlases:
-                if atlas.name == old_name:
-                    atlas.name = new_name
-
-        for info in self.pending_additions.values():
-            for sub in info["additions"]:
-                if sub.parent == old_name:
-                    sub.parent = new_name
-
-        repls = self.pending_replacements.get(dcx_file, {})
-        if old_name in repls:
-            repls[new_name] = repls.pop(old_name)
+        atlas = self.atlases.get(old_name)
+        atlas.rename(new_name)
 
         if old_name in self.thumbnail_cache:
             self.thumbnail_cache[new_name] = self.thumbnail_cache.pop(old_name)
-
-        if old_name in self.atlases:
-            item = self.atlases.pop(old_name)
-            item.name = new_name
-            for sub in item.subtextures:
-                if sub.parent is not None:
-                    sub.parent = new_name
-            self.atlases[new_name] = item
 
         atlas_item.setText(new_name)
         atlas_item.setData(Qt.UserRole, new_name)
@@ -473,20 +586,13 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1)
+        atlas: Atlas = self.atlases.get(atlas_name)
 
-        repls = self.pending_replacements.get(dcx_file, {})
-        atlas_repls = repls.get(atlas_name, {})
+        index = findLast(atlas.replacements, Image.Image)
+        if index is not None:
+            atlas.replacements.pop(index)
 
-        atlas_repls.pop("*Self*", None)
-
-        if not atlas_repls:
-            repls.pop(atlas_name, None)
-
-        if not repls:
-            self.pending_replacements.pop(dcx_file, None)
-
-        self.rebuildAtlas(atlas_name, dcx_file)
+        self.updateCache(atlas_name)
         self.showAtlas(atlas_item)
 
     def addAtlas(self):
@@ -495,16 +601,20 @@ class TextureStudio(QMainWindow):
             if answer != QMessageBox.Yes:
                 return
             self.checkOodleDLL()
-            self.game = Game("Dark Souls 2")
+            self.game = get_game("ds2sotfs")
                 
-        if self.game.name != "Dark Souls 2": # doesn't need a parent as it writes to a standalone tpf
-            files = list(self.LOADED_DCX_FILES.keys())
-            ok, parent = showSelectOptions("Select parent file", "Files:", files)
-            if not ok:
-                return
-            parent = Path(parent)
+        if self.game in [DARK_SOULS_2, DARK_SOULS_2_SOTFS]: # doesn't need a parent as it writes to a standalone tpf
+            parent = None
+
         else:
-            parent = "None"
+            files = list(self.LOADED_DCX_FILES.keys())
+            if len(files) > 1:
+                ok, parent = showSelectOptions("Select parent file", "Files:", files)
+                if not ok:
+                    return
+                parent = Path(parent)
+            else:
+                parent = files[0]
 
         dialog = TextureNamePrompt(mode=ImageType.Texture)
         if not dialog.exec():
@@ -529,53 +639,53 @@ class TextureStudio(QMainWindow):
             showError("A texture of this name already exists!")
             return
 
-        match self.game.name:
-            case 'Bloodborne':
-                img = validateImageForSwizzle(Image.open(img_path))
-                if img is None:
-                    return
-                
-                w,h = img.size
-
-                with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-                    img_path = tmp.name
-                    img.save(tmp.name)
-
-                platform = TPFPlatform.PS4
-                consoleinfo = TPFTexture.ConsoleInfo(
-                    width=w,
-                    height=h,
-                    texture_count=1,
-                    unk2=13,
-                    dxgi_format=DXGI_FORMAT[_format]
-                )
+        if self.game == BLOODBORNE:
+            img = validateImageForSwizzle(Image.open(img_path))
+            if img is None:
+                return
             
-            case "Demon's Souls":
-                img = Image.open(img_path)
-                w,h = img.size
-                platform = TPFPlatform.PC
-                consoleinfo = TPFTexture.ConsoleInfo(
-                    width=w,
-                    height=h,
-                    texture_count=1,
-                    unk2=13,
-                    dxgi_format=DXGI_FORMAT[_format]
-                )
+            w,h = img.size
 
-            case _:
-                platform = TPFPlatform.PC
-                consoleinfo = None
+            with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                img_path = tmp.name
+                img.save(tmp.name)
+
+            platform = TPFPlatform.PS4
+            consoleinfo = TPFTexture.ConsoleInfo(
+                width=w,
+                height=h,
+                texture_count=1,
+                unk2=13,
+                dxgi_format=DXGI_FORMAT[_format]
+            )
+            
+        elif self.game == DEMONS_SOULS:
+            img = Image.open(img_path)
+            w,h = img.size
+            platform = TPFPlatform.PC
+            consoleinfo = TPFTexture.ConsoleInfo(
+                width=w,
+                height=h,
+                texture_count=1,
+                unk2=13,
+                dxgi_format=DXGI_FORMAT[_format]
+            )
+
+        else:
+            img = Image.open(img_path)
+            platform = TPFPlatform.PC
+            consoleinfo = None
 
         blank = TPFTexture(stem=name, mipmap_count=1, format=DXGI_STRUCT_MAP[DXGI_FORMAT[_format]], platform=platform, console_info=consoleinfo)
         blank.replace_dds(img_path, dds_format=_format)
         new_atlas = Atlas(
             name=name,
             texture=blank,
+            dimensions=img.size,
             parent=parent
         )
 
-        self.pending_new_atlases.setdefault(parent, [])
-        self.pending_new_atlases[parent].append(new_atlas)
+        self.pending_new_atlases.append(new_atlas)
         self.atlases.setdefault(name, new_atlas)
 
         item = NaturalListItem(name)
@@ -585,12 +695,12 @@ class TextureStudio(QMainWindow):
         item.setData(Qt.UserRole+2, ImageType.Custom) # image type
         self.atlas_list.addItem(item)
 
-        self.rebuildAtlas(name, parent)
+        self.updateCache(name)
         self.atlas_list.setCurrentItem(item)
         self.showAtlas(self.atlas_list.currentItem())
 
     def addIcon(self, mode: IconMode = IconMode.Append):
-        if self.game.name == "Dark Souls 2": # no point adding a subtexture to a single icon
+        if self.game in [DARK_SOULS_2, DARK_SOULS_2_SOTFS]: # no point adding a subtexture to a single icon
             showError("If you're trying to add icons for DS2, see:<br><a href='https://darksoulstexturestudio.readthedocs.io/en/latest/custom-files/'>Docs</a>", _type=QMessageBox.Information)
             return
         
@@ -604,11 +714,10 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
-        dcx_file = atlas_item.data(Qt.UserRole+1)
         atlas_obj = self.atlases.get(atlas_name)
         subs = atlas_obj.subtextures
 
-        if len(subs) == 0:
+        if self.game.gametype != GameType.MODERN and len(subs) == 0:
             showError("Sorry, this atlas isn't mapped yet!<br>Consider mapping them yourself in Dimensions.json :D")
             return
         
@@ -642,7 +751,7 @@ class TextureStudio(QMainWindow):
                 else:
                     w, h = img.size
 
-                if self.game.name == "Bloodborne": # check for valid img size
+                if self.game == BLOODBORNE: # check for valid img size
                     img = validateImageForSwizzle(img, atlas_img.size, (padding, padding))
                     if img is None:
                         return
@@ -679,21 +788,15 @@ class TextureStudio(QMainWindow):
             width=w,
             height=h,
             parent=atlas_name,
-            img=img,
+            image=img,
             vanilla=False,
-            half=half
+            flag_half=half
         )
 
-        self.pending_additions.setdefault(dcx_file, {
-            "data": self.LAYOUT_DATA.get(dcx_file),
-            "additions": [],
-            "output": dcx_file.with_name(dcx_file.name.replace('.tpf.dcx', '.sblytbnd.dcx'))
-        })
+        #atlas_obj.add(sub)
+        atlas_obj.additions.append(sub)
 
-        self.pending_additions[dcx_file]["additions"].append(sub)
-        atlas_obj.add(sub)
-
-        self.rebuildAtlas(atlas_name, dcx_file)
+        self.updateCache(atlas_name)
         self.showAtlas(atlas_item)
 
     def clear(self):
@@ -710,11 +813,8 @@ class TextureStudio(QMainWindow):
         self.current_crop = None
         self.current_atlas = None
         self.thumbnail_cache = {}
-        self.pending_additions = {}
-        self.pending_replacements = {}
-        self.pending_new_atlases = {}
-        self.RESOLUTIONS = {}
-        self.game = Game(None)
+        self.pending_new_atlases = []
+        self.game = get_game(None)
         self.preview_label.setText("Texture Preview")
         self.info_label.setText(("Texture Info", "Texture Info"))
         return True
@@ -766,7 +866,7 @@ class TextureStudio(QMainWindow):
             files = [file]
         else:
             if not dirmode:
-                file_path = Path(QFileDialog.getOpenFileName(self, "Select File", "", "Texture Files (*.tpf.dcx *.tpf);;All Files (*.*)")[0])
+                file_path = Path(QFileDialog.getOpenFileName(self, "Select File", "", "Texture Containers (*.tpf.dcx *.tpf);;All Files (*.*)")[0])
                 if not file_path or file_path == BLANK_PATH:
                     return
                 files = [file_path] if file_path else []
@@ -788,7 +888,7 @@ class TextureStudio(QMainWindow):
         self.game = game
 
         file_mappings = []
-        if self.game.name == 'Nightreign':
+        if self.game == NIGHTREIGN:
             if not dirmode:
                 files += [f for f in file_path.parent.glob("*.sblytbnd.dcx")]
 
@@ -839,7 +939,7 @@ class TextureStudio(QMainWindow):
 
                 if tpf and not layout and ('_common_' in Path(tpf).stem):
                     layout = Path(QFileDialog.getOpenFileName(self, f"Select layout for {tpf.name}", str(tpf.parent), "Layout Files (*.sblytbnd.dcx)")[0])
-                    print(layout)
+
                     if not (layout != BLANK_PATH and layout.exists()):
                         layout = None
                         logger.warning("Layout file for %s is either an invalid path or wasn't returned on prompt. Atlases will not be processed.", tpf.name)
@@ -851,7 +951,7 @@ class TextureStudio(QMainWindow):
 
             file_mappings.extend(standalone) # no layout
 
-        elif self.game.name in ['Sekiro', 'Armored Core 6', 'Elden Ring']:
+        elif self.game in [SEKIRO, ARMORED_CORE_6, ELDEN_RING]:
             for f in files:
                 if 'sblytbnd' in str(f):
                     continue
@@ -897,7 +997,7 @@ class TextureStudio(QMainWindow):
         self.thread.started.connect(self.worker.run)
         self.thread.start()
 
-    def loadDone(self, atlases, LOADED_DCX_FILES, LAYOUT_DATA, RESOLUTIONS, msg):
+    def loadDone(self, atlases, LOADED_DCX_FILES, LAYOUT_DATA, msg):
         """Stuff to do on successful load of files."""
         self.progress_dialog.close()
 
@@ -908,7 +1008,6 @@ class TextureStudio(QMainWindow):
         self.atlases = atlases
         self.LOADED_DCX_FILES = LOADED_DCX_FILES
         self.LAYOUT_DATA = LAYOUT_DATA
-        self.RESOLUTIONS = RESOLUTIONS
 
         self.atlas_list.clear()
         for name, _atlas in atlases.items():
@@ -921,7 +1020,7 @@ class TextureStudio(QMainWindow):
         logger.info("Finished populating atlas list")
 
         self.atlas_list.sortItems()
-        self.toggleCustomNames() # simply update it just in case setting was on before load
+        self.toggleCustomNames(self.atlas_list) # simply update it just in case setting was on before load
         self.atlas_list.setCurrentRow(0)
         self.showAtlas(self.atlas_list.currentItem())
 
@@ -932,9 +1031,10 @@ class TextureStudio(QMainWindow):
             return
 
         if mode == ExportMode.ATLAS:
-            ok, filetype = showSelectOptions('File Type', 'Would you like to export in PNG or DDS?', ['png', 'dds'])
-            if not ok:
+            filetypeprompt = RadioButtonDialog('File Type', 'Would you like to export in PNG or DDS?', options={0: 'png', 1: 'dds'}, default=0)
+            if not filetypeprompt.exec():
                 return
+            filetype = 'dds' if filetypeprompt.selected()==1 else 'png'
         else:
             filetype = 'png'
 
@@ -982,10 +1082,8 @@ class TextureStudio(QMainWindow):
             msg.addButton(QMessageBox.Ok)
             _open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved_path))))
             msg.exec()
-        else:
-            QMessageBox.critical(self, "Error", f"Tasks Failed!")
 
-    def toggleCustomNames(self):
+    def toggleCustomNames(self, caller: QListWidget):
         """Replaces displaying text for QListWidgetItems with the mapped ones whilst retaining the original in UserRole"""
 
         def restoreNames(widget: QListWidget):
@@ -993,35 +1091,45 @@ class TextureStudio(QMainWindow):
                 item = widget.item(idx)
                 item.setText(item.data(Qt.UserRole))
 
-        if self.btn_useCustomNames.isChecked():
-            ATLASNAMES = loadJson("Atlas_Names")
-            SUBNAMES = loadJson("Subtexture_Names")
-            for idx in range(self.atlas_list.count()):
-                item = self.atlas_list.item(idx)
-                text = item.text()
-                if self.game.name == 'Dark Souls 2': # special handling due to weird naming system
-                    text = text[text.rfind('_')+1:]
+        match caller:
+            case self.atlas_list:
+                if self.btn_useCustomNames_atlas.isChecked():
+                    ATLASNAMES = loadJson("Atlas_Names")
+                    for idx in range(self.atlas_list.count()):
+                        item = self.atlas_list.item(idx)
+                        text = item.text()
+                        if self.game in [DARK_SOULS_2, DARK_SOULS_2_SOTFS]: # special handling due to weird naming system
+                            text = text[text.rfind('_')+1:]
 
-                name = ATLASNAMES.get(self.game.name, {}).get(text, None) or item.text()
-                item.setText(name)
-            
-            for idx in range(self.subtexture_list.count()):
-                item = self.subtexture_list.item(idx)
-                text = item.text()
+                        name = ATLASNAMES.get(self.game.name, {}).get(text, None) or item.text()
+                        item.setText(name)
 
-                _, *pieces = text.split('_')
-                try:
-                    id = pieces[-1]
-                    _type = pieces[0]
-                    name = SUBNAMES.get(self.game.name, {}).get(_type, {}).get(id.lstrip('0'), None) or text
-                except IndexError:
-                    name = text
+                else:
+                    restoreNames(self.atlas_list)
 
-                item.setText(name)
+            case self.subtexture_list:
+                if self.btn_useCustomNames_subtextures.isChecked():
+                    SUBNAMES = loadJson("Subtexture_Names")
+                    for idx in range(self.subtexture_list.count()):
+                        item = self.subtexture_list.item(idx)
+                        text = item.text()
 
-        else:
-            restoreNames(self.atlas_list)
-            restoreNames(self.subtexture_list)
+                        _, *pieces = text.split('_')
+                        try:
+                            id = pieces[-1]
+                            _type = pieces[0]
+                            name = SUBNAMES.get(self.game.name, {}).get(_type, {}).get(id.lstrip('0'), None) or text
+                        except IndexError:
+                            name = text
+
+                        item.setText(name)
+
+                else:
+                    restoreNames(self.subtexture_list)
+
+        current_search = self.subtexture_search.text()
+        if current_search:
+            self.filterList(current_search, self.subtexture_list)   
 
     def promptAlphaThreshold(self):
         num, ok = QInputDialog.getInt(None, "Prompt", "Enter new Alpha Threshold:", 10, 0, 255, 1)
@@ -1031,47 +1139,12 @@ class TextureStudio(QMainWindow):
         self.btn_alphaThreshold.setText(f"Alpha Threshold = {num}")
         self.showAtlas(self.atlas_list.currentItem())
 
-    def openSearchWindow(self):
-        """Creates a SearchWindow instance and handles the search."""
-
-        def handle_search(text, atlasMode):
-            widget = self.atlas_list if atlasMode else self.subtexture_list
-
-            if widget.count() == 0:
-                showError('No Textures are loaded.')
-                return
-
-            text = text.lower().strip()
-            found = False
-            first_match = None
-
-            for i in range(widget.count()):
-                item = widget.item(i)
-
-                matches = text in item.text().lower()
-                item.setHidden(not matches)
-
-                if matches and first_match is None:
-                    first_match = item
-                    found = True
-
-            if found:
-                widget.setCurrentItem(first_match)
-                first_match.setSelected(True)
-                widget.scrollToItem(first_match)
-            else:
-                showError('No results found!')
-
-        self.searchInstance = SearchWindow()
-        self.searchInstance.results.connect(handle_search)
-        self.searchInstance.show()
-
-    def resolveSubtexture(self, atlas_name, sub_name, atlas_img) -> SubTexture:
+    def getSubtextureRect(self, atlas_name, sub_name, atlas_img) -> tuple[int, int, int, int]:
         """Return subtexture rect from either layout or grid system."""
 
         st = self.atlases.get(atlas_name, {}).fetch(sub_name)
         if st:
-            return st
+            return st.x, st.y, st.width, st.height
 
         dimensions = loadJson("Dimensions").get(self.game.name, {}).get(atlas_name)
 
@@ -1092,17 +1165,14 @@ class TextureStudio(QMainWindow):
         row = idx // tiles_per_row
         col = idx % tiles_per_row
 
-        return SubTexture(
-            name=sub_name,
-            x=col * tile_w,
-            y=row * tile_h,
-            width=tile_w,
-            height=tile_h
-        )
+        x = col * tile_w
+        y = row * tile_h
 
-    def queueReplacement(self, dcx_file: Path, atlas_item, sub_item, img_path: Path):
+        return x, y, tile_w, tile_h
+
+    def queueReplacement(self, atlas_item, sub_item, img_path: Path):
         atlas_name = atlas_item.data(Qt.UserRole)
-        sub_name = sub_item.data(Qt.UserRole) if sub_item else "*Self*"
+        atlas: Atlas = self.atlases.get(atlas_name)
 
         try:
             new_img = Image.open(img_path).convert("RGBA")
@@ -1110,24 +1180,37 @@ class TextureStudio(QMainWindow):
             showError("Selected file is not an image supported by PIL.")
             return
 
-        if sub_name == "*Self*": # atlas replacement
-            atlas_img = self.getBaseImage(atlas_name)
+        if not sub_item: # atlas replacement
+            atlas_img = self.atlases[atlas_name].viewable
             new_img = new_img.resize((atlas_img.width, atlas_img.height), Image.Resampling.LANCZOS)
 
-        else: # subtexture replacement
-            atlas_img = self.getPilImage(atlas_name)
-            st = self.resolveSubtexture(atlas_name, sub_name, atlas_img)
+            atlas.replacements.append(new_img)
 
-            if not st:
+        else: # subtexture replacement
+            sub_name = sub_item.data(Qt.UserRole)
+
+            atlas_img = self.getPilImage(atlas_name)
+            x,y,w,h = self.getSubtextureRect(atlas_name, sub_name, atlas_img)
+
+            if not (w and h):
                 showError(f"Could not resolve subtexture: {sub_name}")
                 return
 
-            new_img = new_img.resize((st.width, st.height), Image.Resampling.LANCZOS)
+            new_img = new_img.resize((w, h), Image.Resampling.LANCZOS)
 
-        self.pending_replacements.setdefault(dcx_file, {}).setdefault(atlas_name, {})
-        self.pending_replacements[dcx_file][atlas_name][sub_name] = new_img
+            atlas.replacements.append(
+                SubTexture(
+                    name=sub_name,
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                    image=new_img,
+                    parent=atlas.name,
+                )
+            )
 
-        self.rebuildAtlas(atlas_name, dcx_file)
+        self.updateCache(atlas_name)
 
         atlas_item.setForeground(Qt.yellow)
         if sub_item:
@@ -1138,13 +1221,12 @@ class TextureStudio(QMainWindow):
 
     def registerReplacement(self):
         """Prompt the user for an image, then add it to the replacement queue with the currently selected texture as the target."""
-        if self.game.type is None:
+        if self.game.gametype is None:
             showError("No files loaded!")
         
         atlas = self.atlas_list.currentItem()
         atlas_name = atlas.data(Qt.UserRole)
         sub = self.subtexture_list.currentItem()
-        dcx_file = atlas.data(Qt.UserRole+1)
         atlas_obj = self.atlases.get(atlas_name)
 
         if atlas_obj.parent == "None":
@@ -1158,11 +1240,11 @@ class TextureStudio(QMainWindow):
         if not img_path or img_path == BLANK_PATH:
             return
         
-        self.queueReplacement(dcx_file, atlas, sub, img_path)
+        self.queueReplacement(atlas, sub, img_path)
 
-    def applyChanges(self):
+    def applyChanges(self, task: WriteTask):
         """Start replacement from File menu and create popup."""
-        if not self.pending_replacements and not self.pending_additions and not self.pending_new_atlases:
+        if not self.hasPendingChanges():
             QMessageBox.information(self, "Info", "No actions queued.")
             return
         
@@ -1170,18 +1252,11 @@ class TextureStudio(QMainWindow):
         if not output_dir:
             return
     
-        self.replace_dialog = QProgressDialog("Applying changes...", None, 0, 0, self)
-        self.replace_dialog.setWindowTitle("Processing")
-        self.replace_dialog.setWindowModality(Qt.ApplicationModal)
-        self.replace_dialog.setCancelButton(None)
-        self.replace_dialog.setMinimumDuration(0)
-        self.replace_dialog.setMinimumWidth(300)
-        self.replace_dialog.show()
-        self.replace_dialog.setStyleSheet("""QLabel {qproperty-alignment: AlignCenter;} QProgressBar {text-align: center;}""")
+        self.replace_dialog = ProcessingBar("Applying changes...")
 
         self.r_thread = QThread()
-        self.r_worker = WriteWorker(self.pending_new_atlases, self.pending_replacements, self.pending_additions, self.LOADED_DCX_FILES, self.LAYOUT_DATA,
-                                      self.getPilImage, self.game, self.RESOLUTIONS, output_dir)
+        self.r_worker = WriteWorker(self.atlases, self.pending_new_atlases,self.LOADED_DCX_FILES, self.LAYOUT_DATA, 
+                                    self.alphaThreshold, self.game, output_dir, task)
         self.r_worker.moveToThread(self.r_thread)
         self.r_thread.started.connect(self.r_worker.run)
 
@@ -1193,8 +1268,8 @@ class TextureStudio(QMainWindow):
         
         self.r_thread.start()
 
-    def showCompressionDialog(self, name):
-        dialog = CompressionPrompt(name)
+    def showCompressionDialog(self, name, show_enc=True):
+        dialog = CompressionPrompt(name, self.game, show_enc=show_enc)
         dialog.exec()
         self.r_worker._result = dialog.get_result()
         self.r_worker._event.set()
@@ -1205,10 +1280,10 @@ class TextureStudio(QMainWindow):
             self.replace_dialog.close()
         if success:
             self.extractionDone(True, saved_path)
-            self.pending_replacements.clear()
         else:
             showError(msg)
 
+    # region Image Handling
     def formatImageInfo(self, name, file, pil_img, coords='None', img_type: ImageType = ImageType.Atlas):
         """Properly format information about the selected preview to display."""
         def formatSize(bytes_val):
@@ -1262,100 +1337,43 @@ class TextureStudio(QMainWindow):
         
         return short, expanded
 
-    def rebuildAtlas(self, atlas_name, dcx_file):
-        """Reconstruct the atlas with its changes"""
-        base_img = self.resolveAtlas(atlas_name, dcx_file)
+    def updateCache(self, atlas_name):
+        """Updates thumbnail cache with an atlas' image that has had all modifications compiled"""
+        self.thumbnail_cache[atlas_name] = self.getPilImage(atlas_name)
 
-        additions = (self.pending_additions.get(dcx_file, {}).get("additions", []))
-
-        for add in additions:
-            if add.parent != atlas_name or add.img is None:
-                continue
-
-            img = add.img
-            x = int(add.x)
-            y = int(add.y)
-
-            if y + img.height > base_img.height:
-                new_height = y + img.height
-                new_img = Image.new("RGBA", (base_img.width, new_height), (0, 0, 0, 0))
-                new_img.paste(base_img, (0, 0))
-                base_img = new_img
-
-            base_img.paste(img, (x, y))
-
-        atlas_repls = (self.pending_replacements.get(dcx_file, {}).get(atlas_name, {}))
-
-        for sub_name, img in atlas_repls.items():
-            if sub_name == "*Self*": # full atlas replacement
-                base_img = img.copy()
-                continue
-
-            st = self.resolveSubtexture(atlas_name, sub_name, base_img)
-            if not st:
-                continue
-
-            base_img.paste(img, st.pos)
-
-        self.thumbnail_cache[atlas_name] = base_img
-
-    def resolveAtlas(self, atlas_name, dcx_file):
-        """Returns pending new atlases first, else original"""
-        pending = self.pending_new_atlases.get(dcx_file, [])
-        for a in pending:
-            if a.name == atlas_name:
-                return self.getBaseImage(texture=a.texture)
-
-        return self.getBaseImage(atlas=atlas_name)
-
-    def getBaseImage(self, atlas=None, texture=None) -> Image.Image:
-        """Converts texture bytes to viewable image. If no texture is given it fetches the texture from atlas name"""
-        if texture is None:
-            texture: TPFTexture = self.atlases[atlas].texture
-
-        if self.game.name == "Bloodborne":
-            dds = texture.get_headerized_data(TPFPlatform.PC) # existing ones return due to being a valid DDS, custom are not swizzled; PC skips deswizzling
-            return Image.open(BytesIO(dds)).convert("RGBA")
-        
-        with BytesIO(texture.data) as dds_buffer:
-            return Image.open(dds_buffer).convert("RGBA")
-
-    def getPilImage(self, atlas_name, return_atlas=False, createDebug=False):
+    def getPilImage(self, atlas_name, createDebug=False) -> Image.Image:
         """Returns rendered preview (rebuild if needed)"""
+        atlas = next((a for a in self.pending_new_atlases
+                        if a.name == atlas_name), None) or self.atlases.get(atlas_name)
+        if atlas is None:
+            raise KeyError(f"Atlas with name {atlas_name} coudln't be located.")
         
-        if return_atlas: # hacky way of getting a raw Atlas object into WriteWorker but i cba
-            return self.atlases[atlas_name]
-
-        if atlas_name not in self.thumbnail_cache:
-            atlas_item = self.atlas_list.currentItem()
-            dcx_file = atlas_item.data(Qt.UserRole+1)
-            self.rebuildAtlas(atlas_name, dcx_file)
-
-        img = self.thumbnail_cache.get(atlas_name)
-
-        if img is None:
-            img = self.getBaseImage(atlas=atlas_name)
+        img = atlas.compileTexture(self.alphaThreshold)
 
         if createDebug:
-            img = createDebugGrid(img, self.atlases[atlas_name].subtextures)
-
-        if self.alphaThreshold > 0:
-            img = cleanByAlpha(img, threshold=self.alphaThreshold)
+            img = createDebugGrid(img, self.atlases[atlas_name].allSubs())
 
         return img
 
-    def getPixmap(self, img: Optional[Image.Image] = None, resample: bool = False, crop_to: Optional[tuple] = None):
-        """Returns pixmap of current texture preview. Used to ensure proper quality with no downscaling in the Texture Viewer."""
-        if img is None:
-            sub = self.subtexture_list.currentItem()
-            if sub is not None: # subtexture
-                name = self.subtexture_list.currentItem().data(Qt.UserRole)
-                st = self.atlases[self.current_atlas].fetch(name)
-                img = self.getPilImage(self.current_atlas).crop(st.box())
+    def getSelectedImage(self) -> Image.Image:
+        """Returns Image object of current preview"""
+        sub = self.subtexture_list.currentItem()
+        if sub is not None: # subtexture
+            name = self.subtexture_list.currentItem().data(Qt.UserRole)
+            st = self.atlases[self.current_atlas].fetch(name)
+            img = self.getPilImage(self.current_atlas).crop(st.box())
 
-            else: # atlas
-                atlas_name = self.atlas_list.currentItem().data(Qt.UserRole)
-                img = self.getPilImage(atlas_name, createDebug=self.btn_atlasGrid.isChecked()).copy()
+        else: # atlas
+            atlas_name = self.atlas_list.currentItem().data(Qt.UserRole)
+            img = self.getPilImage(atlas_name, createDebug=self.btn_atlasGrid.isChecked()).copy()
+
+        img.convert()
+        return img
+
+    def getPixmap(self, img: Optional[Image.Image] = None, resample: bool = False, crop_to: Optional[tuple] = None):
+        """Returns pixmap of current texture preview."""
+        if img is None:
+            img = self.getSelectedImage()
 
         if crop_to is not None:
             img = img.crop(crop_to)
@@ -1364,25 +1382,44 @@ class TextureStudio(QMainWindow):
             img = img.copy()
             img.thumbnail(self.preview_label.size().toTuple(), Image.Resampling.LANCZOS)
 
-        return pil2Qpixmap(img)
+        return img.toqpixmap()
 
-    def isModified(self, dcx_file, atlas_name, sub_name=None):
+    def reloadHighlighting(self, only_current: bool = False):
+        if only_current:
+            items = [self.atlas_list.currentItem()]
+        else:
+            items = [self.atlas_list.item(x) for x in range(self.atlas_list.count())]
+
+        for item in items:
+            item.setForeground(self.isModified(item.data(Qt.UserRole), None))
+
+    def isModified(self, atlas_name, sub_name=None):
         """Returns True if subtexture has been modified, for recoloring its entry."""
+        atlas: Atlas = self.atlases.get(atlas_name)
+
         if sub_name is None: # atlas check
-            if self.pending_replacements.get(dcx_file, {}).get(atlas_name) == "*Self*":
+            if atlas.is_delte:
+                return Modified.DELETED
+            
+            if atlas.modified:
+                return Modified.REPLACED # not actually replaced, but it gets colored yellow cuz subitems are modified
+            
+            if atlas.override is not None:
                 return Modified.REPLACED
 
-            for fl in (dcx_file, "None"): # also check parentless files, aka custom
-                if any(atlas_name == atlas.name for atlas in self.pending_new_atlases.get(fl, [])):
-                    return Modified.ADDED
+            if any(atlas_name == atlas.name for atlas in self.pending_new_atlases):
+                return Modified.ADDED
 
             return Modified.FALSE
-        
-        if sub_name in self.pending_replacements.get(dcx_file, {}).get(atlas_name, {}):
-            return Modified.REPLACED
-        additions = self.pending_additions.get(dcx_file, {}).get('additions', [])
-        if any(sub_name == i.name for i in additions):
+
+        if atlas.match(sub_name).is_delete:
+            return Modified.DELETED
+
+        if atlas.match(sub_name, "additions")[1] is not None:
             return Modified.ADDED
+
+        if atlas.match(sub_name, "replacements")[1] is not None:
+            return Modified.REPLACED
         
         return Modified.FALSE
 
@@ -1401,7 +1438,7 @@ class TextureStudio(QMainWindow):
         # Load subtextures
         self.subtexture_list.blockSignals(True)
         self.subtexture_list.clear()
-        for sub in self.atlases.get(atlas_name, Atlas).subtextures:
+        for sub in self.atlases.get(atlas_name).allSubs():
             if self.btn_hideBlankIcons.isChecked() and sub.blank:
                 continue
             name = sub.name
@@ -1409,28 +1446,22 @@ class TextureStudio(QMainWindow):
             item = NaturalListItem(name)
             item.setData(Qt.UserRole, name)
             item.setSizeHint(QSize(0, 30))
-
-            match self.isModified(dcx_file, atlas_name, name):
-                case Modified.REPLACED:
-                    item.setForeground(Qt.yellow)
-                    current.setForeground(Qt.yellow)
-                case Modified.ADDED:
-                    item.setForeground(Qt.green)
-                    current.setForeground(Qt.yellow)
+            item.setForeground(self.isModified(atlas_name, name))
 
             self.subtexture_list.addItem(item)
         
-        match self.isModified(dcx_file, atlas_name, None): # check if whole atlas is modified
-            case Modified.ADDED:
-                current.setForeground(Qt.green)
-            case Modified.REPLACED:
-                current.setForeground(Qt.yellow)
+        self.reloadHighlighting(only_current=True) # check if whole atlas is modified
 
         self.subtexture_list.blockSignals(False)
         self.subtexture_list.sortItems()
 
         self.info_label.setText(self.formatImageInfo(atlas_name, dcx_file, atlas_img, img_type=current.data(Qt.UserRole+2)))
-        self.toggleCustomNames() # just to update it
+        self.toggleCustomNames(self.atlas_list) # just to update it
+        self.toggleCustomNames(self.subtexture_list) # ''
+
+        current_search = self.subtexture_search.text()
+        if current_search:
+            self.filterList(current_search, self.subtexture_list)
 
     def showSubtexture(self, current):
         """Display a preview of the selected subtexture."""
@@ -1450,7 +1481,7 @@ class TextureStudio(QMainWindow):
         atlas_img = self.getPilImage(self.current_atlas)
         cropped_img = atlas_img.crop(st.box())
 
-        self.preview_label.setPixmap(pil2Qpixmap(cropped_img))
+        self.preview_label.setPixmap(self.getPixmap(cropped_img, resample=True))
         self.current_crop = cropped_img
         self.info_label.setText(self.formatImageInfo(name, dcx_file, cropped_img, st.pos, img_type=ImageType.Subtexture))
 
@@ -1466,26 +1497,51 @@ class TextureStudio(QMainWindow):
 
         else: # No subtexture selected, export the full atlas   
             img_type = self.atlas_list.currentItem().data(Qt.UserRole+2)
-            if img_type == ImageType.Atlas:
-                ok, choice = showSelectOptions("Select Export", f"The currently selected texture is an atlas.\nWould you like to export the whole image, " \
-                                                    "or its subtextures?", ["Full Atlas", "All Subtextures"])
-                
-                if not ok:
-                    return
-                if choice == "All Subtextures":
-                    self.saveAll()
-                    return
+            if img_type == ImageType.Texture:
+                self.runExtraction(tasks=[(self.current_atlas, None)], mode=ExportMode.ATLAS)
 
-            gridOverlay = self.btn_atlasGrid.isChecked()
-            if gridOverlay:
-                answer = showQuery('Export', 'You currently have the Grid Overlay enabled, do you want to keep it in the image for this export?')
-                if answer == QMessageBox.Cancel:
+            elif img_type == ImageType.Atlas:
+                dlg = RadioButtonDialog(
+                    "Select Export Type",
+                    f"The currently selected texture is an atlas.\nWould you like to export the whole image, or its subtextures?",
+                    options={
+                        0: "Full Atlas Texture",
+                        1: "Dump All Subtextures",
+                        2: "Select Subtextures to Export"
+                    },
+                    default=0
+                )
+                if not dlg.exec():
                     return
                 
-                elif answer == QMessageBox.No:
-                    gridOverlay = False
+                match dlg.selected():
+                    case 1:#"All Subtextures"
+                        self.saveAll()
+                        return
 
-            self.runExtraction(tasks=[(self.current_atlas, None)], mode=ExportMode.ATLAS, gridOverlay=gridOverlay)
+                    case 0:#"Full"
+                        gridOverlay = self.btn_atlasGrid.isChecked()
+                        if gridOverlay:
+                            answer = showQuery('Export', 'You currently have the Grid Overlay enabled, do you want to keep it in the image for this export?')
+                            if answer == QMessageBox.Cancel:
+                                return
+                            
+                            elif answer == QMessageBox.No:
+                                gridOverlay = False
+
+                        self.runExtraction(tasks=[(self.current_atlas, None)], mode=ExportMode.ATLAS, gridOverlay=gridOverlay)
+
+                    case 2:#"Select"
+                        selector = SubtextureSelectorWindow("Select Subtextures", self.atlases)
+                        if not selector.exec():
+                            return
+
+                        selection = selector.getSelected()
+                        tasks = []
+                        for atlas in selection:
+                            for sub in atlas.allSubs():
+                                tasks.append((atlas.name, sub))
+                        self.runExtraction(tasks=tasks)
 
     def saveAll(self):
         """Export all subtextures from the currently selected atlas"""

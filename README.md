@@ -23,8 +23,9 @@ rich
 constrata  
 PySide6  
 Pillow  
-
-# Usage
+zstandard  
+  
+# Basic Usage
 Install either [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) or [NUXE](https://github.com/JKAnderson/Nuxe), then run it and unpack the Menu folder — or the whole game if you want.
 
 After launching DSTS, you can either open a dcx/tpf file or a directory of them (such as your menu folder) from the File menu.
@@ -40,53 +41,10 @@ Dark Souls 2 doesn't use atlases and just keeps a folder of thousands of images,
 _**Note**_: The high resolution versions of Elden Ring and Nightreigns's icons are stored in 00_solo(_h/l).tpfbdt which you can unpack with [WitchyBND](https://github.com/ividyon/WitchyBND).  
 Be aware that opening this directory in DSTS will use a LOT of resources. (~3.4GB of RAM for ER and ~1.3GB for NR)  
   
-A known issue to watch out for is that DSTS detects if it's hi/low using the files' paths. This means that if you're opening files from a directory that isn't 
-the game's vanilla path or a mod folder, it will default to `hi` and any exports that affect layouts will write that as the root. So the `low` versions will be mistakenly named `hi` which you'll have to change with WitchyBND by editing the given xml. Usually you'll be modding the `hi` versions anyway but it's good to be aware of this. This issue doesn't apply to Nightreign which specifies the version in the file name. (_h/_l)  
-  
-## Settings:  
-`Custom Names` - This setting replaces the internal names with mapped ones in \defs. 
-This setting can be especially useful for if you don't know the ID of an item in a big list, allowing you to search by its display name. 
-Some data, such as Nightreign garbs and Sekiro bosses, were mapped manually, but most of it was scripted from Smithbox exports.  
-`Hide Blank Icons` - Only for older games with no layout system. DSTS crops the atlases in a grid layout. Because of this, some 'tiles' 
-may be blank. DSTS automatically recognises these blank spaces and ignores them when building the subtexture list. Disable this setting to show 
-the aforementioned blank spaces, for example, if you wanted to place a new icon in that spot.  
-`Calculate Image Size` - When enabled, simulates the creation of a PNG image to display its file size. This info may be nice to know, but it comes at 
-a significant performance drop. It is, therefore, disabled by default.  
-`Show Icon Borders` - Draws a red bounding box around subtextures wherever possible. This will not be visible on texture dumps or replacements, 
-but can be optionally selected for atlas exports.  
-`Alpha Threshold` - Any pixel with an alpha value less than or equal to this number will have their RGB values set to 0. Click to update the value.  
-  
-## Other UI features
-Double clicking the texture info box will expand it to show extra metadata.  
-  
-Double clicking the texture preview will open a fullscreen viewport so you can zoom and pan around the image.  
-  
-## Searching entries
-You can press the `Search` button on the menu bar to open a prompt for a string. It defaults to Qt.MatchContains within the subtextures list.
-If you want it to search through atlases (for example, for DS2), check `Search Atlases`  
-  
-## Texture replacement
-The `Replace` button selects whichever texture you currently have in the preview, whether that is an atlas or one of its subtextures. It then prompts you 
-for an image file. The image you selected is then patched into the atlas/icon within memory. Going to `File -> Save As` will then export your 
-changes as a tpf/dcx file, which should work as is. Some testing showed that Witchy seems to find the files to be agreeable.  
-  
-## Adding custom icons
-Pressing `Add` will once again prompt you for an image, this time to append as a completely new entry. After giving your new subtexture a name, 
-DSTS will find free space in the atlas to place it, enlarging the image if it doesn't find any. For modern games, the subtexture will 
-automatically be added to the layout (.sblytbnd) file as well. For the older games, it will simply attempt to add a new tile, respecting the existing 
-grid dimensions. Currently doesn't work on unmapped, non-uniform atlases. In addition, instead of appending a new icon, you can "define" an icon from an 
-existing image.  
-  
-*Icon #0 in Dark Souls generally corresponds to the "Empty Icon" that's used if nothing is held in that slot. For this reason, you probably want to avoid modifying it if you're trying to add a custom icon.  
-  
-You can also add your own custom atlases, though this feature is pretty experimental.
-  
-### Extra note about adding to DS2
-To create a custom icon for DS2, don't load any game files and then press the plus button for the atlas list. DSTS will assume you're writing a TPF file with no compression.  
-You probably want BC3_UNORM_SRGB as the format. `Save As` will write plain tpf files to the output location.  
-  
 # Credits:
-A myriad thanks to Kmstr and Managarm for their suggestions, feedback and testing throughout development! :))  
+Grimrukh for making soulstruct, which this application heavily depends on.  
+Kmstr and Managarm for their suggestions, feedback and testing throughout development! :)) 
+   
 # Licensing and info:
 This project includes code from the SoulStruct library:  
 SoulStruct: https://github.com/Grimrukh/soulstruct  

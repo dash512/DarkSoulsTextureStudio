@@ -3,23 +3,13 @@ from io import BytesIO
 from pathlib import Path
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import QFileDialog
-from DSTextureStudio.Enums import Game, Resolution
-from DSTextureStudio.GUI import gameTypeDialog, InvalidImagePrompt
-from DSTextureStudio.GameInfo import LAYOUT_PATHS
+from soulstruct.games import Game, get_game
+from DSTextureStudio.GUI import gameTypeDialog, RadioButtonDialog
 from DSTextureStudio.Utilities import path_has_sequence, checkBlockSize, align_up, tupleAdd
-from soulstruct.dcx import core
 import tempfile
 import logging
 
 logger = logging.getLogger(__name__)
-
-def getLayoutData(dcx_path):
-    with open(dcx_path, "rb") as f:
-        decompressed_bytes, _ = core.decompress(f)
-        start_index = decompressed_bytes.find(b"<TextureAtlas")
-        xml_bytes = decompressed_bytes[start_index:]
-        xml_text = xml_bytes.decode("utf-8", errors="ignore").replace("\x00", "")
-        return f"<Root>{xml_text}</Root>"
 
 def getFreeSpace(atlas_size, used_rects, w, h, step=4, padding=2):
     atlas_w, atlas_h = atlas_size
@@ -64,25 +54,27 @@ def parseGameType(path) -> Game:
     parts = Path(path).parts
 
     if "PS3_GAME" in parts:
-        game_type = 'Demon\'s Souls'
+        game_type = 'des'
     if path_has_sequence(parts, ["steamapps", "common", "DARK SOULS REMASTERED"]):
-        game_type = 'Dark Souls 1'
+        game_type = 'dsr'
+    #elif path_has_sequence(parts, ["steamapps", "common", "Dark Souls II"]):
+        #game_type = 'ds2'
     elif path_has_sequence(parts, ["steamapps", "common", "Dark Souls II Scholar of the First Sin"]):
-        game_type = 'Dark Souls 2'
+        game_type = 'sotfs'
     elif path_has_sequence(parts, ["steamapps", "common", "DARK SOULS III"]):
-        game_type = 'Dark Souls 3'
+        game_type = 'ds3'
     elif path_has_sequence(parts, ["Bloodborne", "CUSA03173", "dvdroot_ps4"]):
-        game_type = 'Bloodborne'
+        game_type = 'bb'
     elif path_has_sequence(parts, ["steamapps", "common", "Sekiro"]):
-        game_type = 'Sekiro'
+        game_type = 'sdt'
     elif path_has_sequence(parts, ["steamapps", "common", "ARMORED CORE VI FIRES OF RUBICON"]):
-        game_type = "Armored Core 6"
+        game_type = "ac6"
     elif path_has_sequence(parts, ["steamapps", "common", "ELDEN RING NIGHTREIGN"]):
-        game_type = 'Nightreign'
+        game_type = 'nr'
     elif path_has_sequence(parts, ["steamapps", "common", "ELDEN RING"]):
-        game_type = 'Elden Ring'
+        game_type = 'er'
 
-    return Game(game_type)
+    return get_game(game_type)
 
 def createDebugGrid(image, subtextures):
     """Outputs a png with grid lines for debugging"""
@@ -117,7 +109,7 @@ def checkGame(path: str) -> Game:
     game = parseGameType(path=path)
     if game.name is None:
         game = gameTypeDialog()
-    return game
+    return game if game.name is not None else None
 
 def createBlankImage(dimensions: tuple) -> str:
     img = Image.new("RGBA", dimensions, (0, 0, 0, 0))
@@ -125,19 +117,6 @@ def createBlankImage(dimensions: tuple) -> str:
     img.save(temp_file.name, "PNG")
 
     return temp_file.name
-
-def getLayoutPath(game, **kwargs):
-    """
-    Returns full virtual path for a layout file including common root.
-    
-    Expects:
-    
-    file - parent file, eg. '01_Common`
-    
-    format_mode - what resolution the file is for. generally hi/low
-    
-    layout_name - name of the .layout file"""
-    return LAYOUT_PATHS[game].format(**kwargs)
 
 def padImage(img: Image.Image, new_size: tuple[int, int]) -> Image.Image:
     """Pads an image to a multiple of align."""
@@ -155,7 +134,17 @@ def validateImageForSwizzle(img: Image.Image, parent_dims: tuple = (0, 0), paddi
     if checkBlockSize(img=final_dims, align=8):
         return img
 
-    dlg = InvalidImagePrompt()
+    dlg = RadioButtonDialog(
+        title="Invalid Texture",
+        text="Swizzled textures should have dimensions divisible by 8.\nWhat would you like to do with this texture?",
+        options={
+            0: "Cancel Addition",
+            1: "Ignore Warning",
+            2: "Resize Image",
+            3: "Pad Image With Alpha",
+            4: "Choose A New Image"
+        }
+    )
     if not dlg.exec():
         return None
 
@@ -167,21 +156,21 @@ def validateImageForSwizzle(img: Image.Image, parent_dims: tuple = (0, 0), paddi
     )
 
     match dlg.selected():
-        case InvalidImagePrompt.IGNORE:
+        case 0:
             return img
 
-        case InvalidImagePrompt.CANCEL:
+        case 1:
             return None
 
-        case InvalidImagePrompt.RESIZE:
+        case 2:
             logger.info("Resampling image to dimensions: %s", required)
             return img.resize(required, Image.Resampling.LANCZOS)
 
-        case InvalidImagePrompt.PAD:
+        case 3:
             logger.info("Padding image to dimensions: %s", required)
             return padImage(img, required)
 
-        case InvalidImagePrompt.NEW:
+        case 4:
             filename, _ = QFileDialog.getOpenFileName(None, "Select Image", "", "Image Files (*.png *.dds *.jpg *.jpeg *.webm);;All Files (*.*)",)
             if not filename:
                 return None
@@ -192,13 +181,3 @@ def validateImageForSwizzle(img: Image.Image, parent_dims: tuple = (0, 0), paddi
                 return validateImageForSwizzle(new_img.copy(), parent_dims=parent_dims, padding=padding)
 
     return None
-
-def getResFromLytPath(path: Path|str) -> Resolution:
-    if isinstance(path, str):
-        path = Path(path)
-
-    for r in ["Hi", "Low", "High"]:
-        if path_has_sequence(path.parts, [r]):
-            return Resolution.from_str(r)
-    return None
-

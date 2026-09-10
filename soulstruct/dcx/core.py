@@ -63,20 +63,26 @@ class DCXVersionInfo(tp.NamedTuple):
         return s[:-2] + ")"
 
 
-class DCXType(Enum):
+class DCXType(Enum): # NOTE: Reordered in DSTS
     Unknown = -1  # could not be detected
+
     Null = 0  # no compression
-    DCX_KRAK = 10  # DCX header, Oodle compression. Used in Sekiro and Elden Ring. <- moved here in DSTS as it's the most common and should be near the top
-    Zlib = 1  # not really DCX but supported
-    DCP_EDGE = 2  # DCP header, chunked deflate compression. Used in ACE:R TPFs.
-    DCP_DFLT = 3  # DCP header, deflate compression. Used in DeS test maps.
-    DCX_EDGE = 4  # DCX header, chunked deflate compression. Primarily used in DeS.
+    DCX_KRAK = 10  # DCX header, Oodle compression. Used in Sekiro, Elden Ring and Nightreign.
+
     DCX_DFLT_10000_24_9 = 5  # DCX header, deflate compression. Primarily used in DS1 and DS2.
     DCX_DFLT_10000_44_9 = 6  # DCX header, deflate compression. Primarily used in BB and DS3.
+
     DCX_DFLT_11000_44_8 = 7  # DCX header, deflate compression. Used for the backup regulation in DS3 save files.
     DCX_DFLT_11000_44_9 = 8  # DCX header, deflate compression. Used in Sekiro.
+
     DCX_DFLT_11000_44_9_15 = 9  # DCX header, deflate compression. Used in old ER regulation.
     DCX_ZSTD = 11  # ZSTD compression. Used in new ER regulation.
+    DCX_EDGE = 4  # DCX header, chunked deflate compression. Primarily used in DeS.
+
+    DCP_EDGE = 2  # DCP header, chunked deflate compression. Used in ACE:R TPFs.
+    DCP_DFLT = 3  # DCP header, deflate compression. Used in DeS test maps.
+
+    Zlib = 1  # not really DCX but supported
 
     # Game default aliases.
     DES = DCX_EDGE
@@ -165,7 +171,7 @@ DCX_VERSION_INFO = {
     DCXType.DCX_ZSTD:               DCXVersionInfo(b"ZSTD", 0x11000, 0x44, 0x4C, None, 0,       0,         0x010100),
 }
 
-DCX_VINFO_TO_TYPE = { # Created in DSTS to handle how AC6 uses a compression level of 9 instead of 6 for KRAK. Fixes crash but layouts still won't load. TODO: figure out.
+DCX_VINFO_TO_TYPE = { # Created in DSTS to add any edge cases.
     None: DCXType.DCP_DFLT,
     DCXVersionInfo(b"EDGE", 0x10000, 0x24, None, 9,    0x10000, 0,         0x100100): DCXType.DCX_EDGE,
     DCXVersionInfo(b"DFLT", 0x10000, 0x24, 0x2C, 9,    0,       0,         0x010100): DCXType.DCX_DFLT_10000_24_9,
@@ -173,7 +179,13 @@ DCX_VINFO_TO_TYPE = { # Created in DSTS to handle how AC6 uses a compression lev
     DCXVersionInfo(b"DFLT", 0x11000, 0x44, 0x4C, 8,    0,       0,         0x010100): DCXType.DCX_DFLT_11000_44_8,
     DCXVersionInfo(b"DFLT", 0x11000, 0x44, 0x4C, 9,    0,       0,         0x010100): DCXType.DCX_DFLT_11000_44_9,
     DCXVersionInfo(b"DFLT", 0x11000, 0x44, 0x4C, 9,    0,       0xF000000, 0x010100): DCXType.DCX_DFLT_11000_44_9_15,
+
+    # unoriginal to soulstruct, found by cr1msonyokai (self proclaimed victim)
+    DCXVersionInfo(b"DFLT", 0x11000, 0x44, 0x4C, 9,    0,       0x15000000,0x010100): DCXType.DCX_DFLT_11000_44_9_15,
+
+    # unoriginal to soulstruct, added to handle how AC6 uses a compression level of 9 instead of 6 for KRAK.
     DCXVersionInfo(b"KRAK", 0x11000, 0x44, 0x4C, 6,    0,       0,         0x010100): DCXType.DCX_KRAK,
+
     DCXVersionInfo(b"KRAK", 0x11000, 0x44, 0x4C, 9,    0,       0,         0x010100): DCXType.DCX_KRAK,
     DCXVersionInfo(b"ZSTD", 0x11000, 0x44, 0x4C, None, 0,       0,         0x010100): DCXType.DCX_ZSTD,
 }

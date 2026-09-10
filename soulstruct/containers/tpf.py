@@ -316,7 +316,7 @@ class TPFTexture:
         with tempfile.TemporaryDirectory() as dds_dir:
             temp_image_path = Path(dds_dir, f"temp{image_path.suffix}")
             shutil.copy2(image_path, temp_image_path)
-            result = texconv("-f", dds_format, "-o", dds_dir, "-nologo", "-y", temp_image_path)
+            result = texconv("-f", dds_format, "-o", dds_dir, "-nologo", "-m", "1", "-y", temp_image_path) # remove `-m 1` to restore all mip levels if ever needed
             if result.returncode == 0:
                 try:
                     dds_loc = Path(dds_dir, "temp.dds")

@@ -13,7 +13,7 @@
     "soul_sequence": {"width": 64, "height": 64}
 },
 
-"Dark Souls 1": {
+"Dark Souls: Remastered": {
     "Icon00": {"width": 164, "height": 184},
     "Icon01": {"width": 164, "height": 184},
     "Icon10": {"width": 164, "height": 184},
@@ -27,9 +27,9 @@
     "soul_sequence": {"width": 256, "height": 256}
 },
 
-"Dark Souls 2": {},
+"Dark Souls II: Scholar of the First Sin": {},
 
-"Dark Souls 3": {
+"Dark Souls III": {
     "MENU_AttributeIcon": {"width": 30, "height": 32},
     "MENU_AutoSave": {"width": 32, "height": 64},
     "MENU_CharaMake_Icon": {"width": 128, "height": 128},

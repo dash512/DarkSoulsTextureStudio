@@ -6,6 +6,7 @@ from __future__ import annotations
 __all__ = [
     "Game",
     "GAMES",
+    "ALL_GAMES",
     "get_game",
     "DEMONS_SOULS",
     "DEMONS_SOULS_REMAKE",
@@ -28,6 +29,7 @@ from soulstruct.config import *
 from soulstruct.dcx import DCXType
 from soulstruct.utilities.files import SOULSTRUCT_PATH
 
+from DSTextureStudio.Enums import GameType # NOTE: added in DSTS (duh)
 
 @dataclass(slots=True, frozen=True)
 class Game:
@@ -48,6 +50,8 @@ class Game:
     interroot_prefix: str = ""
     gadget_name: str = ""
     default_file_paths: dict[str, str] = field(default_factory=dict)
+    gametype: GameType = GameType.LEGACY # NOTE: Added in DSTS.
+    default_name_encoding: int = 2 # NOTE: Added in DSTS.
 
     # TODO: other file version info
     # TODO: Soulstruct event import shortcut functions, etc.
@@ -106,7 +110,7 @@ DEMONS_SOULS = Game(
     aliases=("demonssouls", "des"),
     default_dcx_type=DCXType.DCX_EDGE,
     special_dcx_types={
-        # NOTE: Some DCX files, such as Map Pieve FLVERs, have DCX and debug non-DCX versions.
+        # NOTE: Some DCX files, such as Map Piece FLVERs, have DCX and debug non-DCX versions.
         ".hkx": DCXType.Null,
         ".msb": DCXType.Null,
         ".nvmbnd": DCXType.Null,
@@ -128,6 +132,7 @@ DEMONS_SOULS = Game(
         "ParamDefBND": "paramdef/paramdef.paramdefbnd.dcx",
         "TalkDirectory": "script/talk",
     },
+    gametype=GameType.PS
 )
 
 
@@ -219,7 +224,7 @@ DARK_SOULS_2 = Game(
     abbreviated_name="ds2",
     submodule_name="darksouls2",
     aliases=("darksouls2", "ds2", "dks2"),
-    default_dcx_type=DCXType.DCX_DFLT_10000_24_9,
+    default_dcx_type=DCXType.Null, #NOTE: Modified in DSTS from DCX_DFLT_10000_24_9, as icons are all uncompressed.
     default_game_path=DS2_PATH,
 )
 
@@ -230,7 +235,7 @@ DARK_SOULS_2_SOTFS = Game(
     abbreviated_name="ds2sotfs",
     submodule_name="darksouls2",  # TODO: Currently identical to DS2.
     aliases=("darksouls2sotfs", "ds2sotfs", "dks2sotfs", "sotfs"),
-    default_dcx_type=DCXType.DCX_DFLT_10000_24_9,
+    default_dcx_type=DCXType.Null, #NOTE: Modified in DSTS from DCX_DFLT_10000_24_9, as icons are all uncompressed.
     default_game_path=DS2_SOTFS_PATH,
 )
 
@@ -260,6 +265,7 @@ BLOODBORNE = Game(
         "ParamDefBND": "paramdef/paramdef.paramdefbnd.dcx",
         "TalkDirectory": "script/talk",
     },
+    gametype=GameType.PS
 )
 
 
@@ -287,6 +293,8 @@ SEKIRO = Game(
     default_game_path=SEKIRO_PATH,
     generic_game_path=Path("C:/Program Files (x86)/Steam/steamapps/common/Sekiro"),  # TODO: "/Game"?
     interroot_prefix="N:\\NTC\\data\\Target\\INTERROOT_win64",
+    gametype=GameType.MODERN,
+    default_name_encoding=1
 )
 
 
@@ -315,20 +323,57 @@ ELDEN_RING = Game(
         "MapStudioDirectory": "map/MapStudio",
         "MSGDirectory": "msg/engus",
     },
+    gametype=GameType.MODERN,
+    default_name_encoding=1
 )
 
 
-GAMES = (
+ARMORED_CORE_6 = Game(
+    "ARMORED_CORE_6",
+    "Armored Core VI: Fires of Rubicon",
+    abbreviated_name='ac6',
+    default_dcx_type=DCXType.DCX_KRAK,
+    gametype=GameType.MODERN,
+    default_name_encoding=1
+)
+
+
+NIGHTREIGN = Game(
+    "NIGHTREIGN",
+    "Elden Ring: Nightreign",
+    abbreviated_name="nr",
+    aliases=('Nightreign', 'nr', 'ernr', 'nightreign'),
+    default_dcx_type=DCXType.DCX_KRAK,
+    gametype=GameType.MODERN,
+    default_name_encoding=1
+)
+
+
+GAMES = ( # NOTE: made for DSTS
+    DEMONS_SOULS,
+    DARK_SOULS_DSR,
+    DARK_SOULS_2_SOTFS,
+    DARK_SOULS_3,
+    BLOODBORNE,
+    SEKIRO,
+    ARMORED_CORE_6,
+    ELDEN_RING,
+    NIGHTREIGN
+)
+
+ALL_GAMES = ( # NOTE: renamed in DSTS
     DEMONS_SOULS,
     DEMONS_SOULS_REMAKE,
     DARK_SOULS_PTDE,
     DARK_SOULS_DSR,
     DARK_SOULS_2,
     DARK_SOULS_2_SOTFS,
-    BLOODBORNE,
     DARK_SOULS_3,
+    BLOODBORNE,
     SEKIRO,
+    ARMORED_CORE_6,
     ELDEN_RING,
+    NIGHTREIGN
 )
 
 
@@ -336,13 +381,17 @@ def get_game(game_name: str | Game):
     """Spaces, case, apostrophes, and colons in aliases don't matter."""
     if isinstance(game_name, Game):
         return game_name
+    
+    if game_name is None:
+        return Game(None, None, None)
+    
     game_name = game_name.lower()
     for old, new in ((" ", ""), ("'", ""), (":", ""), ("iii", "3"), ("ii", "2")):
         game_name.replace(old, new)
     if game_name in {"darksouls", "darksouls1", "dks", "ds1", "ds"}:
         raise ValueError(f"Ambiguous game name: {game_name}. For Dark Souls 1, try 'ptde' or 'dsr' instead.")
     hits = []
-    for game in GAMES:
+    for game in ALL_GAMES:
         if game_name == game.name.lower() or game_name == game.variable_name.lower() or game_name in game.aliases:
             hits.append(game)
     if not hits:

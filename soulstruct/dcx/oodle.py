@@ -26,6 +26,8 @@ from pathlib import Path
 from soulstruct.config import SEKIRO_PATH, ELDEN_RING_PATH
 from soulstruct.utilities.files import SOULSTRUCT_PATH
 
+from DSTextureStudio.Utilities import getDSTSdir # NOTE: Added in DSTS to allow loading oodle from submodules
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -258,6 +260,7 @@ def decompress(comp_buf: bytes, decompressed_size: int):
 def find_oodle_dll() -> str:
     """Try to find DLL at Soulstruct, Sekiro, or Elden Ring paths."""
     _auto_oodle_locations = (
+        getDSTSdir() / __DLL_NAME, # NOTE: Added in DSTS to allow loading oodle from submodules
         SOULSTRUCT_PATH(__DLL_NAME),
         SOULSTRUCT_PATH("..", __DLL_NAME),
         SEKIRO_PATH / __DLL_NAME,

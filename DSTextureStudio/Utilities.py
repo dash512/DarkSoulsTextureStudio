@@ -63,6 +63,13 @@ def checkBlockSize(img: Image.Image|tuple, align=8) -> bool:
 def tupleAdd(tuples: list[tuple]) -> tuple:
     return tuple(map(sum, zip(*tuples)))
 
+def findLast(lst: list, _type: type):
+    """Find last instance of a type in a list, return None if not found"""
+    for r_idx, element in enumerate(reversed(lst)):
+        if isinstance(element, _type):
+            return len(lst) - 1 - r_idx
+    return None
+
 if __name__ == "__main__":
     pass
 
