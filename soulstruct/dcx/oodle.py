@@ -26,7 +26,7 @@ from pathlib import Path
 from soulstruct.config import SEKIRO_PATH, ELDEN_RING_PATH
 from soulstruct.utilities.files import SOULSTRUCT_PATH
 
-from DSTextureStudio.Utilities import getDSTSdir # NOTE: Added in DSTS to allow loading oodle from submodules
+from DSTS.Utilities import getDSTSdir # NOTE: Added in DSTS to allow loading oodle from submodules
 
 
 _LOGGER = logging.getLogger(__name__)

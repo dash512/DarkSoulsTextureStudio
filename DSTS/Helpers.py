@@ -4,8 +4,8 @@ from pathlib import Path
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import QFileDialog
 from soulstruct.games import Game, get_game
-from DSTextureStudio.GUI import gameTypeDialog, RadioButtonDialog
-from DSTextureStudio.Utilities import path_has_sequence, checkBlockSize, align_up, tupleAdd
+from DSTS.GUI import gameTypeDialog, RadioButtonDialog
+from DSTS.Utilities import path_has_sequence, checkBlockSize, align_up, tupleAdd
 import tempfile
 import logging
 

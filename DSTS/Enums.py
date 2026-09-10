@@ -1,4 +1,5 @@
 from enum import Enum, auto, IntEnum
+from PySide6.QtGui import QColor
 
 class ExportMode(Enum):
     ATLAS = auto()
@@ -10,10 +11,10 @@ class GameType(Enum):
     PS = auto()
 
 class Modified(Enum):
-    FALSE = "#FFFFFF"
-    ADDED = "#00FF00"
-    REPLACED = "#FFFF00"
-    DELETED = "#FF0000"
+    FALSE = QColor.fromString("#FFFFFF")
+    ADDED = QColor.fromString("#00FF00")
+    REPLACED = QColor.fromString("#FFFF00")
+    DELETED = QColor.fromString("#FF0000")
 
 class ImageType(Enum):
     Atlas = auto()

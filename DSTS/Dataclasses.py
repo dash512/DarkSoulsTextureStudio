@@ -12,9 +12,8 @@ from soulstruct.containers.tpf import TPFTexture, TPFPlatform, TPF
 from soulstruct.containers import Binder, BinderEntry, BinderVersion, BinderVersion4Info
 from soulstruct.base.textures.dds import DDS
 from soulstruct.base.textures.dds.swizzle import swizzle_dds_bytes_ps4
-from DSTextureStudio.Utilities import path_has_sequence, findLast, tupleAdd
-from DSTextureStudio.Enums import ImageType, Resolution, DeltaMode
-from DSTextureStudio.Helpers import cleanByAlpha
+from DSTS.Utilities import path_has_sequence, tupleAdd
+from DSTS.Enums import ImageType, Resolution, DeltaMode
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
@@ -47,7 +46,7 @@ class AtlasLayout:
     
     @property
     def xml(self) -> str:
-        return ET.tostring(self.element, encoding='utf-8', method='xml')
+        return ET.tostring(self.element, encoding='unicode', method='xml')
 
     # region Build
     
@@ -119,6 +118,13 @@ class AtlasLayout:
         binder.write(output)
 
     # region Subtexture Handling
+    def verifyName(self, name: str) -> str:
+        if not name.endswith('.png'):
+            name = f"{name}.png"
+        return name
+
+    def fetch(self, name: str) -> ET.Element[str] | None:
+        return next((sub for sub in self.iter_subtextures() if sub.attrib["name"] == self.verifyName(name)), None)
 
     def iter_subtextures(self) -> list[ET.Element[str]]:
         return self.element.findall("SubTexture")
@@ -129,10 +135,15 @@ class AtlasLayout:
     def add_subtextures(self, subtextures: list[SubTexture]) -> None:
         """Adds a list of SubTexture objects to the parent AtlasLayout's Element"""
         atlas = self.element
-        for sub in subtextures:
-            name = sub.name
-            if not name.endswith('.png'):
-                name = f"{name}.png"
+        for s in subtextures:
+            if s.is_disabled:
+                logger.debug("AtlasLayout.add_subtextures(): Skipping disabled subtexture %s", s.name)
+
+                continue
+
+            sub = s.absolute
+
+            name = self.verifyName(sub.name)
 
             if self.has_subtexture(name):
                 logger.info("Subtexture entry `%s` already exists in layout file. Skipping.", name)
@@ -154,6 +165,23 @@ class AtlasLayout:
                 atlas[-2].tail = '\r\n\t'
 
             item.tail = '\r\n'
+
+    def rem(self, name: str):
+        existing = self.fetch(name)
+        if existing is None:
+            return
+
+        atlas = self.element
+        atlas.remove(existing)
+
+        # Restore formatting 
+        if len(atlas):
+            atlas.text = "\r\n\t"
+            for item in atlas:
+                item.tail = "\r\n\t"
+            atlas[-1].tail = "\r\n"
+        else:
+            atlas.text = None
 
     # region Helpers
 
@@ -191,7 +219,7 @@ class Atlas:
 
     subtextures: list[SubTexture] = field(default_factory=list)
 
-    is_delete: Optional[bool] = False # DSTS flag to skip entire atlas when saving
+    is_disabled: Optional[bool] = False # DSTS flag to skip entire atlas when saving
 
     # region Properties
     @property
@@ -223,23 +251,30 @@ class Atlas:
 
     @property
     def replacements(self) -> list[SubTexture]:
-        return [sub for sub in self.subtextures if sub.override is not None]
+        return [sub.override for sub in self.subtextures if sub.override is not None]
+
+    @property
+    def disabled(self) -> list[SubTexture]:
+        return [sub for sub in self.subtextures if sub.is_disabled]
     
     @property
     def modified(self) -> bool:
-        return (self.replacements or self.additions)
+        return any((self.override, self.replacements, self.additions))
 
     @property
     def modifications(self) -> dict:
         return {
             "Name": self.name,
             "Additions": self.additions,
-            "Replacements": self.replacements
+            "Replacements": self.replacements,
+            "Disabled": self.disabled
         }
 
     @property
-    def isAtlas(self) -> bool:
-        return bool(self.subtextures)
+    def iterate(self):
+        """Atlas object's .enumerate()"""
+        for idx, sub in enumerate(self.subtextures):
+            yield idx, sub
 
     # region Helpers
     def rename(self, new_name) -> bool:
@@ -264,7 +299,7 @@ class Atlas:
     def revert(self):
         """Clears all changes."""
         self.override = None
-        self.is_delete = False
+        self.is_disabled = False
         for idx, sub in enumerate(self.subtextures):
             if not sub.vanilla:
                 self.subtextures.pop(idx)
@@ -285,6 +320,18 @@ class Atlas:
     def mergeChanges(self) -> list[SubTexture]:
         """Returns combined list of all changes to the atlas."""
         return self.allSubs(include_non_modified=False)
+
+    def clearChanges(self):
+        self.override = None
+        for idx, sub in self.iterate:
+            if sub.vanilla:
+                sub.override = None
+            else:
+                self.subtextures.pop(idx)
+
+    def toggleDisabled(self) -> bool:
+        self.is_disabled = not self.is_disabled
+        return self.is_disabled
 
     # region Subtexture Helpers
     def add(self, subtexture: SubTexture) -> None:
@@ -317,6 +364,21 @@ class Atlas:
         if idx is not None:
             return self.subtextures.pop(idx)
         return None
+
+    def delete(self, name: str):
+        sub,idx = self.match(name)
+        if sub is None:
+            logger.warning("Subtexture not found for deletion: %s", name)
+            return
+
+        if sub.is_disabled:
+            logger.info("Atlas.delete(): Subtexture %s is already marked for deletion. Undoing.")
+            sub.is_disabled = False
+        else:
+            if sub.vanilla:
+                sub.is_disabled = True # vanilla; mark only for skip at save time
+            else:
+                self.subtextures.pop(idx) # custom; remove it.
 
     def replace(self, name: str, image: Image.Image) -> None:
         """Finds SubTexture object of 'name' and replaces its 'img' field with a provided image"""
@@ -414,8 +476,8 @@ class Atlas:
             dcx_type=dcx_type).write((output / self.name).with_suffix(".tpf"))
         logger.info("Wrote standalone file with compression '%s':\n%s", dcx_type.name, output/self.name)
 
-    def compileTexture(self, alpha_threshold: int = 0) -> Image.Image:
-        """Builds new Image() from self, applying all modifications."""
+    def compileTexture(self) -> Image.Image:
+        """Builds new Image() from self, applying all modifications. Does NOT clean by alpha."""
         IMG = self.viewable
 
         for add in self.additions:
@@ -435,10 +497,12 @@ class Atlas:
             IMG = self.override
         else: # no full replacements, append subtexture replacements
             for rep in self.replacements:
-                rep.paste_into(IMG)
+                rep.paste_into(IMG)                    
 
+        ''' # removed due to circular import
         if alpha_threshold > 0: # zero RGB values with alpha 0
             IMG = cleanByAlpha(IMG, threshold=alpha_threshold)
+        '''
 
         return IMG
 
@@ -624,17 +688,17 @@ class SubTexture:
     width: int
     height: int
 
-    override: Optional[Image.Image] = None # self replacement.
+    override: Optional[SubTexture] = None # self replacement.
 
     image: Optional[Image.Image] = None # is None for vanilla subtextures as can just be cropped from parent Atlas
 
     parent: Optional[str] = None # name of parent atlas
-    vanilla: Optional[bool] = False # set to True on load. Custom additions are False, and therefore can be filtered for 
+    vanilla: bool = False # set to True on load. Custom additions are False, and therefore can be filtered for 
 
     blank: bool = False
-    flag_half: Optional[bool] = False # what even is this bro
+    flag_half: bool = False # what even is this bro
 
-    is_delete: Optional[bool] = False # DSTS flag to skip this subtexture when saving
+    is_disabled: bool = False # DSTS flag to skip adding this subtexture to layouts when saving
 
     @property
     def pos(self) -> tuple[int, int]:
@@ -643,6 +707,12 @@ class SubTexture:
     @property
     def size(self) -> tuple[int, int]:
         return (self.width, self.height)
+
+    @property
+    def absolute(self):
+        if self.override is not None:
+            return self.override
+        return self
 
     def setpos(self, x, y):
         self.x = x
@@ -653,18 +723,22 @@ class SubTexture:
 
     def revert(self):
         self.override = None
-        self.is_delete = False
+        self.is_disabled = False
 
     def box(self, padding: int = 0) -> tuple[int, int, int, int]:
         """Return tuple of coordinates for a box to crop to this subtexture. Allows optional padding"""
         return (self.x - padding, self.y - padding, self.x + self.width + padding, self.y + self.height + padding)
     
-    def paste_into(self, image: Image.Image, mask: Image.Image | None = None) -> None:
+    def paste_into(self, image: Image.Image, mask: Image.Image | None = None) -> bool:
         """Pastes self into an image"""
-        sub_image = self.override or self.image
+        sub_image = self.absolute.image
         if sub_image is None:
-            raise Exception("SubTexture object does not contain an image.")
-        image.paste(sub_image, self.pos, mask=mask)
+            logger.warning("paste_into(): SubTexture %s does not contain an image.", self.name)
+            raise Exception("SubTexture does not contain an image.")
+        image.paste(im=sub_image, box=self.box(), mask=mask)
+
+    def crop_from(self, parent: Atlas):
+        self.image = parent.viewable.crop(self.box())
 
     def to_bytes(self) -> bytes:
         result = bytearray()
@@ -705,6 +779,8 @@ class SubTexture:
             f"    Dimensions = {self.width}x{self.height}\n"
             f"    Blank = {self.blank}\n"
             f"    Half = {self.flag_half}\n"
+            f"    Is Disabled = {self.is_disabled}\n"
+            f"    Override = {self.override}\n"
             f")"
         )
     

@@ -17,7 +17,7 @@ from math import ceil
 from soulstruct.exceptions import SoulstructError
 from .enums import *
 from .utilities import *
-from DSTextureStudio.Utilities import morton8 # Added in DSTS (duh)
+from DSTS.Utilities import morton8 # Added in DSTS (duh)
 
 
 class DDSSwizzleError(SoulstructError):

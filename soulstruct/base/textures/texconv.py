@@ -8,7 +8,7 @@ import typing as tp
 from pathlib import Path
 
 from soulstruct.exceptions import SoulstructError
-from DSTextureStudio.Utilities import getDSTSdir # <- Added in DSTS
+from DSTS.Utilities import getDSTSdir # <- Added in DSTS
 
 
 class TexconvError(SoulstructError):
