@@ -346,10 +346,13 @@ class WriteWorker(QObject):
                 if existing_layout:
                     if additions:
                         logger.info("Adding %i subtexture(s) to existing layout '%s'", len(additions), atlas.name)
-                        existing_layout.add_subtextures(additions)
+                        existing_layout.add(additions)
 
                     for sub in atlas.disabled:
                         existing_layout.rem(sub.name)
+
+                    for sub in atlas.replacements:
+                        existing_layout.mod(sub)
 
                 else:
                     if not additions:

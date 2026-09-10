@@ -274,7 +274,7 @@ class TextureStudio(QMainWindow):
 
         self.atlas_list.setCurrentRow(0)
         self.showAtlas(self.atlas_list.currentItem())
-        self.reloadHighlighting(_all=True)
+        self.reloadHighlighting(_all_atlases=True)
 
     # region Deltas
     def createDelta(self):
@@ -366,7 +366,7 @@ class TextureStudio(QMainWindow):
 
         self.atlas_list.setCurrentRow(0)
         self.showAtlas(self.atlas_list.currentItem())
-        self.reloadHighlighting(_all=True)
+        self.reloadHighlighting(_all_atlases=True)
 
     # region Context Menu
     def openSubtextureMenu(self, position: QPoint):
@@ -446,7 +446,6 @@ class TextureStudio(QMainWindow):
         self.subtexture_list.takeItem(self.subtexture_list.row(sub_item))
 
         self.showAtlas(atlas_item)
-        self.reloadHighlighting()
 
     def revertSubtexture(self, sub_item):
         atlas_item = self.atlas_list.currentItem()
@@ -467,8 +466,6 @@ class TextureStudio(QMainWindow):
         self.reloadHighlighting()
 
     def editSubtexture(self, sub_item):
-        """create a gui prompt similar to define sub that takes these values, builds a Subtexture() from them, then sets sub.override to that
-        """
         atlas_item = self.atlas_list.currentItem()
         if not atlas_item or not sub_item:
             return
@@ -488,11 +485,12 @@ class TextureStudio(QMainWindow):
         if not dlg.exec():
             return
 
-        sub.override = dlg.get_result().crop_from(atlas)
+        new = dlg.get_result()
+        new.crop_from(atlas)
+        sub.override = new
 
         self.updateCache(atlas_name)
-        self.showSubtexture(sub_item)
-        self.reloadHighlighting()
+        self.showAtlas(atlas_item)
 
     def deleteAtlas(self, atlas_item):
         if not atlas_item:
@@ -509,7 +507,7 @@ class TextureStudio(QMainWindow):
             self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
 
         self.updateCache(atlas_name)
-        self.reloadHighlighting()
+        self.reloadHighlighting(_all_atlases=True)
 
     def renameAtlas(self, atlas_item):
         if not atlas_item:
@@ -1166,7 +1164,6 @@ class TextureStudio(QMainWindow):
 
         self.updateCache(atlas_name)
         self.showAtlas(atlas_item)
-        self.reloadHighlighting()
 
     def registerReplacement(self):
         """Prompt the user for an image, then add it to the replacement queue with the currently selected texture as the target."""
@@ -1332,8 +1329,8 @@ class TextureStudio(QMainWindow):
 
         return img.toqpixmap()
 
-    def reloadHighlighting(self, _all: bool = False, subs: bool = True):
-        if _all:
+    def reloadHighlighting(self, _all_atlases: bool = False, subs: bool = True):
+        if _all_atlases:
             items = [self.atlas_list.item(i) for i in range(self.atlas_list.count())]
         else:
             items = [self.atlas_list.currentItem()]
@@ -1365,7 +1362,7 @@ class TextureStudio(QMainWindow):
 
             return Modified.FALSE
 
-        sub, _ = atlas.match(sub_name)
+        sub, _ = atlas.match(sub_name, _all=True)
         if sub is not None:
             if sub.is_disabled:
                 return Modified.DELETED
@@ -1393,15 +1390,14 @@ class TextureStudio(QMainWindow):
         # Load subtextures
         self.subtexture_list.blockSignals(True)
         self.subtexture_list.clear()
-        for sub in self.atlases.get(atlas_name).allSubs():
+        for sub in self.atlases.get(atlas_name).subtextures:
             if self.btn_hideBlankIcons.isChecked() and sub.blank:
                 continue
-            name = sub.name
 
-            item = NaturalListItem(name)
-            item.setData(Qt.UserRole, name)
+            item = NaturalListItem(sub.absolute.name)
+            item.setData(Qt.UserRole, sub.absolute.name)
             item.setSizeHint(QSize(0, 30))
-            item.setForeground(self.isModified(atlas_name, name).value)
+            item.setForeground(self.isModified(atlas_name, sub.name).value)
 
             self.subtexture_list.addItem(item)
         
@@ -1416,7 +1412,7 @@ class TextureStudio(QMainWindow):
         if current_search:
             self.filterList(current_search, self.subtexture_list)
 
-        self.reloadHighlighting(subs=False)
+        self.reloadHighlighting()
 
     def showSubtexture(self, current):
         """Display a preview of the selected subtexture."""
@@ -1425,7 +1421,7 @@ class TextureStudio(QMainWindow):
         
         try:
             name = current.data(Qt.UserRole)
-            st = self.atlases[self.current_atlas].fetch(name)
+            st = self.atlases[self.current_atlas].fetch(name, _all=True).absolute
             dcx_file = self.atlas_list.currentItem().data(Qt.UserRole+1)
             if isinstance(dcx_file, Path):
                 dcx_file = dcx_file.name
@@ -1438,7 +1434,7 @@ class TextureStudio(QMainWindow):
 
         self.preview_label.setPixmap(self.getPixmap(cropped_img, resample=True))
         self.current_crop = cropped_img
-        self.info_label.setText(self.formatImageInfo(name, dcx_file, cropped_img, st.pos, img_type=ImageType.Subtexture))
+        self.info_label.setText(self.formatImageInfo(st.name, dcx_file, cropped_img, st.pos, img_type=ImageType.Subtexture))
 
     def saveSelection(self):
         """Save current subtexture or whole atlas"""

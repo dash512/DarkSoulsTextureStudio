@@ -87,7 +87,7 @@ class AtlasLayout:
             root.set("height", str(dimensions[1]))
 
         obj = cls(path=entryPath, element=root)
-        obj.add_subtextures(subtextures)
+        obj.add(subtextures)
         return obj
 
     def build(layout_objs: list[AtlasLayout], output: Path) -> None:
@@ -132,7 +132,7 @@ class AtlasLayout:
     def has_subtexture(self, name: str) -> bool:
         return any(st.get("name") == name for st in self.iter_subtextures())
 
-    def add_subtextures(self, subtextures: list[SubTexture]) -> None:
+    def add(self, subtextures: list[SubTexture]) -> None:
         """Adds a list of SubTexture objects to the parent AtlasLayout's Element"""
         atlas = self.element
         for s in subtextures:
@@ -169,6 +169,7 @@ class AtlasLayout:
     def rem(self, name: str):
         existing = self.fetch(name)
         if existing is None:
+            logger.debug("AtlasLayout.rem(): SubTexture not found: %s", name)
             return
 
         atlas = self.element
@@ -182,6 +183,10 @@ class AtlasLayout:
             atlas[-1].tail = "\r\n"
         else:
             atlas.text = None
+
+    def mod(self, subtexture: SubTexture):
+        self.rem(subtexture.name)
+        self.add([subtexture])
 
     # region Helpers
 
@@ -306,20 +311,13 @@ class Atlas:
 
             sub.revert()
 
-    def allSubs(self, include_non_modified: bool = True) -> list[SubTexture]:
+    def allSubs(self) -> list[SubTexture]:
         """Returns a single list of SubTextures defining the whole atlas. Built from modifications."""
-        all_subs = self.additions.copy()
-        if include_non_modified:
-            all_subs += self.subtextures
-
-        sub_map = {i.name: i for i in all_subs}
-        sub_map.update({i.name: i for i in self.replacements})
-
-        return list(sub_map.values())
+        return [sub.absolute for sub in self.subtextures]
 
     def mergeChanges(self) -> list[SubTexture]:
         """Returns combined list of all changes to the atlas."""
-        return self.allSubs(include_non_modified=False)
+        return [sub.absolute for sub in self.additions]
 
     def clearChanges(self):
         self.override = None
@@ -338,19 +336,17 @@ class Atlas:
         """Appends a SubTexture to self list"""
         self.subtextures.append(subtexture)
 
-    def match(self, name: str, attr: str = "subtextures") -> tuple[SubTexture, int]|tuple[None, None]:
+    def match(self, name: str, _all: bool = False) -> tuple[SubTexture, int]|tuple[None, None]:
         """Helper function to find SubTexture and index from self list"""
-        for idx, sub in enumerate(getattr(self, attr)):
+        attr = self.allSubs() if _all else self.subtextures
+        for idx, sub in enumerate(attr):
             if sub.name == name:
                 return sub,idx
         return None, None
 
-    def fetch(self, name: str) -> SubTexture|None:
-        """Like Atlas.match but searches globally with self.allSubs()"""
-        for sub in self.allSubs():
-            if sub.name == name:
-                return sub
-        return None
+    def fetch(self, name: str, _all: bool = False) -> SubTexture|None:
+        """Simple match"""
+        return self.match(name, _all)[0]
     
     def subrename(self, name: str, new_name: str) -> None:
         """Renames SubTextures of a certain name from the Atlas."""
