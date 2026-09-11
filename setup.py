@@ -23,7 +23,7 @@ include_files = [
     ("LICENSE", "LICENSE")
 ]
 
-packages = ["soulstruct", "DSTextureStudio"]
+packages = ["soulstruct", "DSTS"]
 
 build_exe_options = {
     "packages": packages,
