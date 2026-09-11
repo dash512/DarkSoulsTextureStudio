@@ -310,7 +310,7 @@ class Palettes():
     """
 
 class TextureNamePrompt(QDialog):
-    def __init__(self, mode: ImageType = ImageType.Subtexture, resizeprompt=True, padprompt=True, halfprompt=True, formatprompt=True, blankprompt=True):
+    def __init__(self, text: Optional[str] = None, mode: ImageType = ImageType.Subtexture, resizeprompt=True, padprompt=True, halfprompt=True, formatprompt=True, blankprompt=True):
         super().__init__()
         self.mode = mode
         self.halfprompt = halfprompt # s
@@ -382,6 +382,8 @@ class TextureNamePrompt(QDialog):
         else:
             self.layout.addWidget(QLabel("Atlas Name:"))
             self.name_input = QLineEdit()
+            if text:
+                self.name_input.setText(text)
             self.layout.addWidget(self.name_input)
 
             if self.formatprompt:
