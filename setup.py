@@ -124,7 +124,7 @@ if sys.platform == "win32":
 
 setup(
     name="DSTS",
-    version="3.10.4",
+    version="3.11.0",
     description="Dark Souls Texture Studio",
     options={"build_exe": build_exe_options},
     cmdclass={"build_exe": CustomBuild},
