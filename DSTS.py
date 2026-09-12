@@ -19,16 +19,16 @@ from soulstruct.containers.tpf import TPF_TEXTURE_FORMAT_TO_DXGI_FORMAT, TPFText
 from soulstruct.base.textures.dds.enums import DXGI_FORMAT_BPP, DXGI_FORMAT
 from soulstruct.games import get_game, DEMONS_SOULS, DARK_SOULS_2, DARK_SOULS_2_SOTFS, BLOODBORNE, SEKIRO, ELDEN_RING, ARMORED_CORE_6, NIGHTREIGN
 # DSTS
-from DSTextureStudio.GameInfo import DXGI_STRUCT_MAP
-from DSTextureStudio.Dataclasses import Atlas, SubTexture
-from DSTextureStudio.Enums import ImageType, IconMode, ExportMode, Resolution, Modified, GameType, DeltaMode, WriteTask
-from DSTextureStudio.Helpers import checkGame, getFreeSpace, createBlankImage, createDebugGrid, getPngSize, validateImageForSwizzle
-from DSTextureStudio.Workers import LoadWorker, WriteWorker, ExtractWorker
-from DSTextureStudio.GUI import (Delegate, ExpandableLabel, Palettes, TextureListWidget, TextureNamePrompt, DefineSubtexturePrompt, ImageLabel,
+from DSTS.GameInfo import DXGI_STRUCT_MAP
+from DSTS.Enums import ImageType, IconMode, ExportMode, Resolution, Modified, GameType, DeltaMode, WriteTask
+from DSTS import Workers
+from DSTS.GUI import (Delegate, ExpandableLabel, Palettes, TextureListWidget, TextureNamePrompt, DefineSubtexturePrompt, ImageLabel,
 showError, showQuery, showSelectOptions, NaturalListItem, getOutputPath, CompressionPrompt, ProcessingBar, RadioButtonDialog, SubtextureSelectorWindow)
-from DSTextureStudio.log_utils import setuplog, addQtHandler, handle_exception, LogEmitter
-from DSTextureStudio.Console import ConsoleWindow
-from DSTextureStudio.Utilities import replaceTerms, loadJson, getDSTSdir, findLast
+from DSTS.log_utils import setuplog, addQtHandler, handle_exception, LogEmitter
+from DSTS import Console
+from DSTS.Utilities import replaceTerms, loadJson, getDSTSdir, findLast
+from DSTS import Helpers
+from DSTS.Dataclasses import Atlas, SubTexture
 
 BLANK_PATH = Path('.')
 
@@ -54,7 +54,7 @@ class TextureStudio(QMainWindow):
         self.pending_new_atlases = []
         self.game = get_game(None)
 
-        self.console = ConsoleWindow(self, emitter=log_emitter)
+        self.console = Console.ConsoleWindow(self, emitter=log_emitter)
         self.console.set_objects(
             instance=lambda: self,
             atlases=lambda: self.atlases,
@@ -272,11 +272,16 @@ class TextureStudio(QMainWindow):
         for a in self.atlases.values():
             a.clearChanges()
 
+        for i in range(self.atlas_list.count()):
+            item = self.atlas_list.item(i)
+            if item.data(Qt.UserRole+3) is not None:
+                self.restorePreviousName(item)
+
         self.atlas_list.setCurrentRow(0)
         self.showAtlas(self.atlas_list.currentItem())
-        self.reloadHighlighting()
+        self.reloadHighlighting(_all_atlases=True)
 
-    # region Actions
+    # region Deltas
     def createDelta(self):
         self.checkOodleDLL()
 
@@ -357,17 +362,20 @@ class TextureStudio(QMainWindow):
                 self.pending_new_atlases.append(atlas)
                 continue
 
-            existing = self.atlases[atlas.name]
+            existing = self.atlases.get(atlas.name)
 
-            if atlas.isAtlas: # Atlas (duh)
+            if atlas.itype == ImageType.Atlas: # Atlas (duh)
                 existing.update(atlas)
             else: # childless Texture type; replace entire texture
-                existing.replacements.append(atlas.texture)
+                existing.override = atlas.texture
+
+            existing.is_disabled = atlas.is_disabled
 
         self.atlas_list.setCurrentRow(0)
         self.showAtlas(self.atlas_list.currentItem())
-        self.reloadHighlighting()
+        self.reloadHighlighting(_all_atlases=True)
 
+    # region Context Menu
     def openSubtextureMenu(self, position: QPoint):
         sender = self.sender()
 
@@ -377,12 +385,9 @@ class TextureStudio(QMainWindow):
                 return
 
             current = self.atlas_list.currentItem()
-            atlas_name = current.data(Qt.UserRole)
             sub_name = item.data(Qt.UserRole)
 
-            modify = self.isModified(atlas_name, sub_name)
-            if modify == Modified.FALSE:
-                return
+            modify = self.isModified(current, sub_name)
 
             self.subtexture_list.setCurrentItem(item)
             self.showSubtexture(item)
@@ -391,13 +396,15 @@ class TextureStudio(QMainWindow):
 
             menu = QMenu(self)
 
+            menu.addAction("Edit Values", lambda: self.editSubtexture(item))
+
             if modify == Modified.ADDED:
-                menu.addAction("Rename", lambda: self.renameSubtexture(item))
-                menu.addAction("Move", lambda: self.moveSubtexture(item))
                 menu.addAction("Delete", lambda: self.deleteSubtexture(item))
 
-            elif modify == Modified.REPLACED:
-                menu.addAction("Revert", lambda: self.revertSubtexture(item))
+            else:
+                if modify == Modified.REPLACED:
+                    menu.addAction("Revert Changes", lambda: self.revertSubtexture(item))
+                menu.addAction("Enable/Disable", lambda: self.deleteSubtexture(item))
 
             menu.exec(menu_pos)
 
@@ -406,11 +413,7 @@ class TextureStudio(QMainWindow):
             if item is None:
                 return
 
-            atlas_name = item.data(Qt.UserRole)
-
-            modify = self.isModified(atlas_name)
-            if modify == Modified.FALSE:
-                return
+            modify = self.isModified(item)
 
             self.atlas_list.setCurrentItem(item)
             self.showAtlas(item)
@@ -419,12 +422,16 @@ class TextureStudio(QMainWindow):
 
             menu = QMenu(self)
 
+            menu.addAction("Rename", lambda: self.renameAtlas(item))
+
             if modify == Modified.ADDED:
                 menu.addAction("Delete", lambda: self.deleteAtlas(item))
-                menu.addAction("Rename", lambda: self.renameAtlas(item))
 
             elif modify == Modified.REPLACED:
                 menu.addAction("Revert", lambda: self.revertAtlas(item))
+
+            else:
+                menu.addAction("Enable/Disable", lambda: self.deleteAtlas(item))
 
             menu.exec(menu_pos)
 
@@ -436,23 +443,12 @@ class TextureStudio(QMainWindow):
         atlas_name = atlas_item.data(Qt.UserRole)
         sub_name = sub_item.data(Qt.UserRole)
 
-        atlas: Atlas = self.atlases.get(atlas_name, {})
-
-        _,index = atlas.match(sub_name, attr="additions")
-        if index is not None:
-            atlas.additions.pop(index)
-
-        _,index = atlas.match(sub_name, attr="replacements")
-        if index is not None:
-            atlas.replacements.pop(index)
+        atlas = self.atlases.get(atlas_name, None)
+        if atlas is not None:
+            atlas.delete(sub_name)
 
         self.updateCache(atlas_name)
         self.subtexture_list.takeItem(self.subtexture_list.row(sub_item))
-
-        items = [self.subtexture_list.item(i) for i in range(self.subtexture_list.count())]
-
-        if all(self.isModified(atlas_name, it.data(Qt.UserRole)) == Modified.FALSE for it in items):
-            atlas_item.setForeground(Qt.white)
 
         self.showAtlas(atlas_item)
 
@@ -464,58 +460,17 @@ class TextureStudio(QMainWindow):
         atlas_name = atlas_item.data(Qt.UserRole)
         sub_name = sub_item.data(Qt.UserRole)
 
-        atlas: Atlas = self.atlases.get(atlas_name, {})
+        atlas: Atlas = self.atlases.get(atlas_name, None)
 
-        _,index = atlas.match(sub_name, attr="replacements")
-        if index is not None:
-            atlas.replacements.pop(index)
-
-        self.updateCache(atlas_name)
-
-        sub_item.setForeground(Qt.white)
-
-        items = [self.subtexture_list.item(i) for i in range(self.subtexture_list.count())]
-
-        if all(self.isModified(atlas_name, it.data(Qt.UserRole)) == Modified.FALSE for it in items):
-            atlas_item.setForeground(Qt.white)
-
-        self.showSubtexture(sub_item)
-
-    def renameSubtexture(self, sub_item):
-        atlas_item = self.atlas_list.currentItem()
-        if not atlas_item or not sub_item:
-            return
-
-        atlas_name = atlas_item.data(Qt.UserRole)
-        old_name = sub_item.data(Qt.UserRole)
-
-        dialog = TextureNamePrompt(resizeprompt=False, halfprompt=False, padprompt=False)
-        if not dialog.exec():
-            return
-
-        new_name, *_ = dialog.get_result()
-
-        if self.atlases.get(atlas_name, {}).fetch(new_name): # returns None if SubTexture of that name isn't found
-            showError(f"A subtexture named '{new_name}' already exists!")
-            return
-
-        atlas: Atlas = self.atlases.get(atlas_name)
-
-        sub,_ = atlas.match(old_name, attr="additions")
+        sub,_ = atlas.match(sub_name)
         if sub is not None:
-            sub.rename(new_name)
-
-        sub,_ = atlas.match(old_name, attr="replacements")
-        if sub is not None:
-            sub.rename(new_name)
-
-        sub_item.setText(new_name)
-        sub_item.setData(Qt.UserRole, new_name)
+            sub.override = None
 
         self.updateCache(atlas_name)
         self.showSubtexture(sub_item)
+        self.reloadHighlighting()
 
-    def moveSubtexture(self, sub_item):
+    def editSubtexture(self, sub_item):
         atlas_item = self.atlas_list.currentItem()
         if not atlas_item or not sub_item:
             return
@@ -523,19 +478,23 @@ class TextureStudio(QMainWindow):
         atlas_name = atlas_item.data(Qt.UserRole)
         sub_name = sub_item.data(Qt.UserRole)
 
-        additions = self.atlases.get(atlas_name).additions
+        atlas = self.atlases.get(atlas_name)
+        if atlas is None:
+            return
 
-        sub = next((s for s in additions if s.name == sub_name), None)
+        sub,_ = atlas.match(sub_name)
         if sub is None:
             return
 
-        dlg = DefineSubtexturePrompt(new=False)
+        dlg = DefineSubtexturePrompt(subtexture=sub)
         if not dlg.exec():
             return
 
-        sub.setpos(*dlg.get_result())
+        new = dlg.get_result()
+        new.crop_from(atlas)
+        sub.override = new
 
-        self.thumbnail_cache.pop(atlas_name, None)
+        self.updateCache(atlas_name)
         self.showAtlas(atlas_item)
 
     def deleteAtlas(self, atlas_item):
@@ -543,18 +502,24 @@ class TextureStudio(QMainWindow):
             return
 
         atlas_name = atlas_item.data(Qt.UserRole)
+        atlas = self.atlases[atlas_name]
 
-        self.pending_new_atlases = [a for a in self.pending_new_atlases if a.name != atlas_name]
-        self.thumbnail_cache.pop(atlas_name, None)
+        if atlas.vanilla:
+            atlas.toggleDisabled()
 
-        self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
+        else:
+            self.pending_new_atlases = [a for a in self.pending_new_atlases if a.name != atlas_name]
+            self.atlas_list.takeItem(self.atlas_list.row(atlas_item))
+
+        self.updateCache(atlas_name)
+        self.reloadHighlighting(_all_atlases=True)
 
     def renameAtlas(self, atlas_item):
         if not atlas_item:
             return
 
         old_name = atlas_item.data(Qt.UserRole)
-        dialog = TextureNamePrompt(mode=ImageType.Texture, formatprompt=False, blankprompt=False)
+        dialog = TextureNamePrompt(text=old_name, mode=ImageType.Texture, formatprompt=False, blankprompt=False)
 
         if not dialog.exec():
             return
@@ -565,29 +530,55 @@ class TextureStudio(QMainWindow):
             showError(f"An atlas named '{new_name}' already exists!")
             return
 
-        atlas = self.atlases.get(old_name)
+        atlas = self.atlases.pop(old_name)
         atlas.rename(new_name)
-
-        if old_name in self.thumbnail_cache:
-            self.thumbnail_cache[new_name] = self.thumbnail_cache.pop(old_name)
+        self.atlases[new_name] = atlas
 
         atlas_item.setText(new_name)
         atlas_item.setData(Qt.UserRole, new_name)
+
+        if atlas_item.data(Qt.UserRole+3) is None:
+            atlas_item.setData(Qt.UserRole+3, old_name)
+
+        self.updateCache(new_name)
+        self.showAtlas(atlas_item)
+        self.reloadHighlighting(subs=False)
+
+    def restorePreviousName(self, atlas_item):
+        atlas_name = atlas_item.data(Qt.UserRole)
+        atlas: Atlas = self.atlases.get(atlas_name)
+
+        old_name = atlas_item.data(Qt.UserRole+3)
+
+        if old_name is None:
+            return
+
+        atlas_item.setText(old_name)
+        atlas_item.setData(Qt.UserRole, old_name)
+        atlas_item.setData(Qt.UserRole+3, None)
+
+        atlas.rename(old_name)
+        self.atlases[old_name] = self.atlases.pop(atlas_name)
 
     def revertAtlas(self, atlas_item):
         if not atlas_item:
             return
 
+        self.restorePreviousName(atlas_item)
+
         atlas_name = atlas_item.data(Qt.UserRole)
         atlas: Atlas = self.atlases.get(atlas_name)
 
-        index = findLast(atlas.replacements, Image.Image)
-        if index is not None:
-            atlas.replacements.pop(index)
+        if atlas is None:
+            return
+
+        atlas.override = None
 
         self.updateCache(atlas_name)
+        self.reloadHighlighting(subs=False)
         self.showAtlas(atlas_item)
 
+    # region Actions
     def addAtlas(self):
         if self.atlas_list.count() == 0:
             answer = showQuery("Creation", "You currently have no loaded files.\nWould you like to create a custom TPF?")
@@ -620,7 +611,7 @@ class TextureStudio(QMainWindow):
             self.LAYOUT_DATA = {}
 
         if dimensions: # blank option was selected and returned tuple
-            img_path = createBlankImage(dimensions)
+            img_path = Helpers.createBlankImage(dimensions)
             if not img_path or img_path == BLANK_PATH:
                 return
         else: # dimensions is None, select image
@@ -633,7 +624,7 @@ class TextureStudio(QMainWindow):
             return
 
         if self.game == BLOODBORNE:
-            img = validateImageForSwizzle(Image.open(img_path))
+            img = Helpers.validateImageForSwizzle(Image.open(img_path))
             if img is None:
                 return
             
@@ -721,6 +712,19 @@ class TextureStudio(QMainWindow):
         atlas_img = self.getPilImage(atlas_name)
 
         match mode:
+            case IconMode.Define:
+                dialog = DefineSubtexturePrompt(*atlas_img.size, None)
+                if not dialog.exec():
+                    return
+
+                sub: SubTexture = dialog.get_result()
+                sub.parent = atlas_name
+                sub.crop_from(atlas_obj)
+
+                if any(sub.name==i.name for i in subs):
+                    showError("An icon of this name already exists!")
+                    return
+                
             case IconMode.Append:
                 dialog = TextureNamePrompt()
                 if not dialog.exec():
@@ -745,49 +749,33 @@ class TextureStudio(QMainWindow):
                     w, h = img.size
 
                 if self.game == BLOODBORNE: # check for valid img size
-                    img = validateImageForSwizzle(img, atlas_img.size, (padding, padding))
+                    img = Helpers.validateImageForSwizzle(img, atlas_img.size, (padding, padding))
                     if img is None:
                         return
                     w, h = img.size
 
                 used_rects = [st.box(padding=padding) for st in subs]
-                pos = getFreeSpace(atlas_img.size, used_rects, w, h, padding=padding)
+                pos = Helpers.getFreeSpace(atlas_img.size, used_rects, w, h, padding=padding)
 
                 if pos:
                     x, y = pos
                 else:
                     x = 0
                     y = atlas_img.size[1] + padding
-                
-            case IconMode.Define:
-                dialog = DefineSubtexturePrompt(*atlas_img.size)
-                if not dialog.exec():
-                    return
 
-                name, hw, xy, half = dialog.get_result()
+                sub = SubTexture(
+                    name=name,
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                    parent=atlas_name,
+                    image=img,
+                    vanilla=False,
+                    flag_half=half
+                )
 
-                if any(name==i.name for i in subs):
-                    showError("An icon of this name already exists!")
-                    return
-                
-                w, h = hw
-                x, y = xy
-                img = None
-                
-        sub = SubTexture(
-            name=name,
-            x=x,
-            y=y,
-            width=w,
-            height=h,
-            parent=atlas_name,
-            image=img,
-            vanilla=False,
-            flag_half=half
-        )
-
-        #atlas_obj.add(sub)
-        atlas_obj.additions.append(sub)
+        atlas_obj.add(sub)
 
         self.updateCache(atlas_name)
         self.showAtlas(atlas_item)
@@ -875,7 +863,7 @@ class TextureStudio(QMainWindow):
         str_path = str(files[0].parent if dirmode else files[0])
         self.setWindowTitle(f"DSTS - {str_path}")
 
-        game = checkGame(path=str_path)
+        game = Helpers.checkGame(path=str_path)
         if game is None:
             return
         self.game = game
@@ -978,7 +966,7 @@ class TextureStudio(QMainWindow):
         self.progress_dialog.show()
 
         self.thread = QThread()
-        self.worker = LoadWorker(file_mappings, self.game)
+        self.worker = Workers.LoadWorker(file_mappings, self.game)
         self.worker.moveToThread(self.thread)
 
         self.worker.progress.connect(self.updateProgress)
@@ -1007,8 +995,8 @@ class TextureStudio(QMainWindow):
             item = NaturalListItem(name)
             item.setData(Qt.UserRole, name) # original name
             item.setData(Qt.UserRole+1, _atlas.parent) # parent file
-            item.setSizeHint(QSize(0, 30))
             item.setData(Qt.UserRole+2, self.atlases.get(name, {}).itype) # image type
+            item.setSizeHint(QSize(0, 30))
             self.atlas_list.addItem(item)
         logger.info("Finished populating atlas list")
 
@@ -1038,7 +1026,7 @@ class TextureStudio(QMainWindow):
         QApplication.processEvents()
 
         thread = QThread(self)
-        worker = ExtractWorker(self.atlases, output_dir, loader=self.getPilImage, tasks=tasks, mode=mode, filetype=filetype, gridOverlay=gridOverlay)
+        worker = Workers.ExtractWorker(self.atlases, output_dir, loader=self.getPilImage, tasks=tasks, mode=mode, filetype=filetype, gridOverlay=gridOverlay)
         worker.moveToThread(thread)
 
         self.Ethread = thread
@@ -1177,10 +1165,14 @@ class TextureStudio(QMainWindow):
             atlas_img = self.atlases[atlas_name].viewable
             new_img = new_img.resize((atlas_img.width, atlas_img.height), Image.Resampling.LANCZOS)
 
-            atlas.replacements.append(new_img)
+            atlas.override = new_img
 
         else: # subtexture replacement
             sub_name = sub_item.data(Qt.UserRole)
+
+            sub,_ = atlas.match(sub_name)
+            if sub is None:
+                return
 
             atlas_img = self.getPilImage(atlas_name)
             x,y,w,h = self.getSubtextureRect(atlas_name, sub_name, atlas_img)
@@ -1191,8 +1183,7 @@ class TextureStudio(QMainWindow):
 
             new_img = new_img.resize((w, h), Image.Resampling.LANCZOS)
 
-            atlas.replacements.append(
-                SubTexture(
+            sub.override = SubTexture(
                     name=sub_name,
                     x=x,
                     y=y,
@@ -1201,16 +1192,10 @@ class TextureStudio(QMainWindow):
                     image=new_img,
                     parent=atlas.name,
                 )
-            )
+            
 
         self.updateCache(atlas_name)
-
-        atlas_item.setForeground(Qt.yellow)
-        if sub_item:
-            sub_item.setForeground(Qt.yellow)
-            self.showSubtexture(sub_item)
-        else:
-            self.showAtlas(atlas_item)
+        self.showAtlas(atlas_item)
 
     def registerReplacement(self):
         """Prompt the user for an image, then add it to the replacement queue with the currently selected texture as the target."""
@@ -1237,10 +1222,6 @@ class TextureStudio(QMainWindow):
 
     def applyChanges(self, task: WriteTask):
         """Start replacement from File menu and create popup."""
-        if not self.hasPendingChanges():
-            QMessageBox.information(self, "Info", "No actions queued.")
-            return
-        
         output_dir = getOutputPath()
         if not output_dir:
             return
@@ -1248,7 +1229,7 @@ class TextureStudio(QMainWindow):
         self.replace_dialog = ProcessingBar("Applying changes...")
 
         self.r_thread = QThread()
-        self.r_worker = WriteWorker(self.atlases, self.pending_new_atlases,self.LOADED_DCX_FILES, self.LAYOUT_DATA, 
+        self.r_worker = Workers.WriteWorker(self.atlases, self.pending_new_atlases,self.LOADED_DCX_FILES, self.LAYOUT_DATA, 
                                     self.alphaThreshold, self.game, output_dir, task)
         self.r_worker.moveToThread(self.r_thread)
         self.r_thread.started.connect(self.r_worker.run)
@@ -1291,7 +1272,7 @@ class TextureStudio(QMainWindow):
         width, height = pil_img.size
         g = gcd(width, height)
         size_uc = formatSize(width * height * len(pil_img.getbands()))
-        size_c = formatSize(getPngSize(pil_img)) if self.btn_calcImageSize.isChecked() else "???"
+        size_c = formatSize(Helpers.getPngSize(pil_img)) if self.btn_calcImageSize.isChecked() else "???"
 
         short = (
             f"<b>Type:</b> {img_type.name}<br>"
@@ -1339,12 +1320,15 @@ class TextureStudio(QMainWindow):
         atlas = next((a for a in self.pending_new_atlases
                         if a.name == atlas_name), None) or self.atlases.get(atlas_name)
         if atlas is None:
-            raise KeyError(f"Atlas with name {atlas_name} coudln't be located.")
+            raise KeyError(f"Atlas with name '{atlas_name}' couldn't be located.")
         
-        img = atlas.compileTexture(self.alphaThreshold)
+        img = atlas.compileTexture()
 
         if createDebug:
-            img = createDebugGrid(img, self.atlases[atlas_name].allSubs())
+            img = Helpers.createDebugGrid(img, self.atlases[atlas_name].allSubs())
+
+        if self.alphaThreshold > 0:
+            img = Helpers.cleanByAlpha(img, self.alphaThreshold)
 
         return img
 
@@ -1377,42 +1361,53 @@ class TextureStudio(QMainWindow):
 
         return img.toqpixmap()
 
-    def reloadHighlighting(self, only_current: bool = False):
-        if only_current:
-            items = [self.atlas_list.currentItem()]
+    def reloadHighlighting(self, _all_atlases: bool = False, subs: bool = True):
+        if _all_atlases:
+            items = [self.atlas_list.item(i) for i in range(self.atlas_list.count())]
         else:
-            items = [self.atlas_list.item(x) for x in range(self.atlas_list.count())]
+            items = [self.atlas_list.currentItem()]
 
         for item in items:
-            match self.isModified(item.data(Qt.UserRole), None):
-                case Modified.ADDED:
-                    item.setForeground(Qt.green)
-                case Modified.REPLACED:
-                    item.setForeground(Qt.yellow)
-                case Modified.FALSE:
-                    item.setForeground(Qt.white)
+            item.setForeground(self.isModified(item, None).value)
 
-    def isModified(self, atlas_name, sub_name=None):
-        """Returns True if subtexture has been modified, for recoloring its entry."""
+        if subs:
+            for i in range(self.subtexture_list.count()):
+                item = self.subtexture_list.item(i)
+                item.setForeground(self.isModified(self.atlas_list.currentItem(), item.data(Qt.UserRole)).value)
+
+    def isModified(self, atlas_item, sub_name=None):
+        """Returns Enum for item entry's color."""
+        atlas_name = atlas_item.data(Qt.UserRole)
         atlas: Atlas = self.atlases.get(atlas_name)
 
         if sub_name is None: # atlas check
-            if atlas.additions or atlas.replacements:
+            if atlas.is_disabled:
+                return Modified.DELETED
+            
+            if atlas.modified:
                 return Modified.REPLACED # not actually replaced, but it gets colored yellow cuz subitems are modified
             
-            if findLast(atlas.replacements, Image.Image) is not None:
+            if atlas.override is not None:
                 return Modified.REPLACED
+
+            if atlas_item.data(Qt.UserRole+3) is not None:
+                return Modified.REPLACED # entry has been renamed, as old name is stored in data(3)
 
             if any(atlas_name == atlas.name for atlas in self.pending_new_atlases):
                 return Modified.ADDED
 
             return Modified.FALSE
 
-        if atlas.match(sub_name, "additions")[1] is not None:
-            return Modified.ADDED
+        sub, _ = atlas.match(sub_name, _all=True)
+        if sub is not None:
+            if sub.is_disabled:
+                return Modified.DELETED
 
-        if atlas.match(sub_name, "replacements")[1] is not None:
-            return Modified.REPLACED
+            if not sub.vanilla:
+                return Modified.ADDED
+
+            if sub.override is not None:
+                return Modified.REPLACED
         
         return Modified.FALSE
 
@@ -1431,25 +1426,17 @@ class TextureStudio(QMainWindow):
         # Load subtextures
         self.subtexture_list.blockSignals(True)
         self.subtexture_list.clear()
-        for sub in self.atlases.get(atlas_name).allSubs():
+        for sub in self.atlases.get(atlas_name).subtextures:
             if self.btn_hideBlankIcons.isChecked() and sub.blank:
                 continue
-            name = sub.name
 
-            item = NaturalListItem(name)
-            item.setData(Qt.UserRole, name)
+            item = NaturalListItem(sub.absolute.name)
+            item.setData(Qt.UserRole, sub.absolute.name)
             item.setSizeHint(QSize(0, 30))
-
-            match self.isModified(atlas_name, name):
-                case Modified.REPLACED:
-                    item.setForeground(Qt.yellow)
-                case Modified.ADDED:
-                    item.setForeground(Qt.green)
+            item.setForeground(self.isModified(current, sub.name).value)
 
             self.subtexture_list.addItem(item)
         
-        self.reloadHighlighting(only_current=True) # check if whole atlas is modified
-
         self.subtexture_list.blockSignals(False)
         self.subtexture_list.sortItems()
 
@@ -1461,6 +1448,8 @@ class TextureStudio(QMainWindow):
         if current_search:
             self.filterList(current_search, self.subtexture_list)
 
+        self.reloadHighlighting()
+
     def showSubtexture(self, current):
         """Display a preview of the selected subtexture."""
         if not current or not self.current_atlas:
@@ -1468,7 +1457,7 @@ class TextureStudio(QMainWindow):
         
         try:
             name = current.data(Qt.UserRole)
-            st = self.atlases[self.current_atlas].fetch(name)
+            st = self.atlases[self.current_atlas].fetch(name, _all=True).absolute
             dcx_file = self.atlas_list.currentItem().data(Qt.UserRole+1)
             if isinstance(dcx_file, Path):
                 dcx_file = dcx_file.name
@@ -1481,7 +1470,7 @@ class TextureStudio(QMainWindow):
 
         self.preview_label.setPixmap(self.getPixmap(cropped_img, resample=True))
         self.current_crop = cropped_img
-        self.info_label.setText(self.formatImageInfo(name, dcx_file, cropped_img, st.pos, img_type=ImageType.Subtexture))
+        self.info_label.setText(self.formatImageInfo(st.name, dcx_file, cropped_img, st.pos, img_type=ImageType.Subtexture))
 
     def saveSelection(self):
         """Save current subtexture or whole atlas"""

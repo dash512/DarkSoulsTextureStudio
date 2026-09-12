@@ -12,9 +12,8 @@ from soulstruct.containers.tpf import TPFTexture, TPFPlatform, TPF
 from soulstruct.containers import Binder, BinderEntry, BinderVersion, BinderVersion4Info
 from soulstruct.base.textures.dds import DDS
 from soulstruct.base.textures.dds.swizzle import swizzle_dds_bytes_ps4
-from DSTextureStudio.Utilities import path_has_sequence, findLast, tupleAdd
-from DSTextureStudio.Enums import ImageType, Resolution, DeltaMode
-from DSTextureStudio.Helpers import cleanByAlpha
+from DSTS.Utilities import path_has_sequence, tupleAdd
+from DSTS.Enums import ImageType, Resolution, DeltaMode
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
@@ -47,7 +46,7 @@ class AtlasLayout:
     
     @property
     def xml(self) -> str:
-        return ET.tostring(self.element, encoding='utf-8', method='xml')
+        return ET.tostring(self.element, encoding='unicode', method='xml')
 
     # region Build
     
@@ -88,7 +87,7 @@ class AtlasLayout:
             root.set("height", str(dimensions[1]))
 
         obj = cls(path=entryPath, element=root)
-        obj.add_subtextures(subtextures)
+        obj.add(subtextures)
         return obj
 
     def build(layout_objs: list[AtlasLayout], output: Path) -> None:
@@ -119,6 +118,13 @@ class AtlasLayout:
         binder.write(output)
 
     # region Subtexture Handling
+    def verifyName(self, name: str) -> str:
+        if not name.endswith('.png'):
+            name = f"{name}.png"
+        return name
+
+    def fetch(self, name: str) -> ET.Element[str] | None:
+        return next((sub for sub in self.iter_subtextures() if sub.attrib["name"] == self.verifyName(name)), None)
 
     def iter_subtextures(self) -> list[ET.Element[str]]:
         return self.element.findall("SubTexture")
@@ -126,13 +132,18 @@ class AtlasLayout:
     def has_subtexture(self, name: str) -> bool:
         return any(st.get("name") == name for st in self.iter_subtextures())
 
-    def add_subtextures(self, subtextures: list[SubTexture]) -> None:
+    def add(self, subtextures: list[SubTexture]) -> None:
         """Adds a list of SubTexture objects to the parent AtlasLayout's Element"""
         atlas = self.element
-        for sub in subtextures:
-            name = sub.name
-            if not name.endswith('.png'):
-                name = f"{name}.png"
+        for s in subtextures:
+            if s.is_disabled:
+                logger.debug("AtlasLayout.add_subtextures(): Skipping disabled subtexture %s", s.name)
+
+                continue
+
+            sub = s.absolute
+
+            name = self.verifyName(sub.name)
 
             if self.has_subtexture(name):
                 logger.info("Subtexture entry `%s` already exists in layout file. Skipping.", name)
@@ -154,6 +165,28 @@ class AtlasLayout:
                 atlas[-2].tail = '\r\n\t'
 
             item.tail = '\r\n'
+
+    def rem(self, name: str):
+        existing = self.fetch(name)
+        if existing is None:
+            logger.debug("AtlasLayout.rem(): SubTexture not found: %s", name)
+            return
+
+        atlas = self.element
+        atlas.remove(existing)
+
+        # Restore formatting 
+        if len(atlas):
+            atlas.text = "\r\n\t"
+            for item in atlas:
+                item.tail = "\r\n\t"
+            atlas[-1].tail = "\r\n"
+        else:
+            atlas.text = None
+
+    def mod(self, subtexture: SubTexture):
+        self.rem(subtexture.name)
+        self.add([subtexture])
 
     # region Helpers
 
@@ -183,14 +216,15 @@ class Atlas:
     name: str
     parent: Optional[Path] # when None, is written as a standalone file 
 
+    vanilla: Optional[bool] = False # set to True on load. Custom are False
+    override: Optional[Image.Image] = None # full self atlas replacement
+
     texture: Optional[TPFTexture|Image.Image] = None # Image is allowed for making Deltas
     dimensions: Optional[tuple[int, int]] = None # only needed for custom Atlases, used for writing TextureAtlas xml properties
 
     subtextures: list[SubTexture] = field(default_factory=list)
 
-    # Modifications
-    replacements: list[SubTexture|Image.Image] = field(default_factory=list)
-    additions: list[SubTexture] = field(default_factory=list)
+    is_disabled: Optional[bool] = False # DSTS flag to skip entire atlas when saving
 
     # region Properties
     @property
@@ -211,40 +245,53 @@ class Atlas:
     @property
     def viewable(self) -> Image.Image:
         """Returns a viewable Image of self.texture's dds"""
+        if isinstance(self.texture, Image.Image):
+            return self.texture
         # existing textures return due to being a valid DDS, custom are not swizzled; PC skips deswizzling
         # this covers both PC and PS4 games unlike BytesIO(texture.data) which wouldn't work on headerless BB textures
         dds = self.texture.get_headerized_data(TPFPlatform.PC) 
         return Image.open(BytesIO(dds)).convert("RGBA")
 
     @property
+    def additions(self) -> list[SubTexture]:
+        return [sub for sub in self.subtextures if sub.vanilla == False]
+
+    @property
+    def replacements(self) -> list[SubTexture]:
+        return [sub.override for sub in self.subtextures if sub.override is not None]
+
+    @property
+    def disabled(self) -> list[SubTexture]:
+        return [sub for sub in self.subtextures if sub.is_disabled]
+    
+    @property
     def modified(self) -> bool:
-        return (self.replacements or self.additions)
+        return any((self.override, self.replacements, self.additions, self.disabled))
 
     @property
     def modifications(self) -> dict:
         return {
             "Name": self.name,
             "Additions": self.additions,
-            "Replacements": self.replacements
+            "Replacements": self.replacements,
+            "Disabled": self.disabled
         }
 
     @property
-    def isAtlas(self) -> bool:
-        return bool(self.subtextures)
-    
+    def iterate(self):
+        """Atlas object's .enumerate()"""
+        for idx, sub in enumerate(self.subtextures):
+            yield idx, sub
+
     # region Helpers
     def rename(self, new_name) -> bool:
         """Renames Atlas object. Returns True if successful"""
-        def renameAttrParent(self, attr, new_name):
-                for s in getattr(self, attr):
-                    if s.parent is not None:
-                        s.parent = new_name
-
         if new_name != self.name:
             self.name = new_name
             self.texture.stem = new_name
-            for i in ["subtextures", "additions", "replacements"]:
-                self.renameAttrParent(i, new_name)
+            for sub in self.subtextures:
+                if sub.parent is not None:
+                    sub.parent = new_name
             return True
         return False
 
@@ -252,44 +299,54 @@ class Atlas:
         self.subtextures.clear()
         self.clearChanges()
         
-    def clearChanges(self):
+    def revert(self):
         """Clears all changes."""
-        self.additions.clear()
-        self.replacements.clear()
+        self.override = None
+        self.is_disabled = False
+        for idx, sub in enumerate(self.subtextures):
+            if not sub.vanilla:
+                self.subtextures.pop(idx)
 
-    def allSubs(self, include_non_modified: bool = True) -> list[SubTexture]:
+            sub.revert()
+
+    def allSubs(self) -> list[SubTexture]:
         """Returns a single list of SubTextures defining the whole atlas. Built from modifications."""
-        all_subs = self.additions.copy()
-        if include_non_modified:
-            all_subs += self.subtextures
-
-        sub_map = {i.name: i for i in all_subs}
-        sub_map.update({i.name: i for i in self.replacements if isinstance(i, SubTexture)})
-
-        return list(sub_map.values())
+        return [sub.absolute for sub in self.subtextures]
 
     def mergeChanges(self) -> list[SubTexture]:
         """Returns combined list of all changes to the atlas."""
-        return self.allSubs(include_non_modified=False)
+        return [sub.absolute for sub in self.subtextures if sub.modified]
+
+    def clearChanges(self):
+        self.override = None
+        self.is_disabled = False
+        for idx, sub in self.iterate:
+            if sub.vanilla:
+                sub.override = None
+                sub.is_disabled = False
+            else:
+                self.subtextures.pop(idx)
+
+    def toggleDisabled(self) -> bool:
+        self.is_disabled = not self.is_disabled
+        return self.is_disabled
 
     # region Subtexture Helpers
     def add(self, subtexture: SubTexture) -> None:
         """Appends a SubTexture to self list"""
         self.subtextures.append(subtexture)
 
-    def match(self, name: str, attr: str = "subtextures") -> tuple[SubTexture, int]|tuple[None, None]:
+    def match(self, name: str, _all: bool = False) -> tuple[SubTexture, int]|tuple[None, None]:
         """Helper function to find SubTexture and index from self list"""
-        for idx, sub in enumerate(getattr(self, attr)):
+        attr = self.allSubs() if _all else self.subtextures
+        for idx, sub in enumerate(attr):
             if sub.name == name:
                 return sub,idx
         return None, None
 
-    def fetch(self, name: str) -> SubTexture|None:
-        """Like Atlas.match but searches globally with self.allSubs()"""
-        for sub in self.allSubs():
-            if sub.name == name:
-                return sub
-        return None
+    def fetch(self, name: str, _all: bool = False) -> SubTexture|None:
+        """Simple match"""
+        return self.match(name, _all)[0]
     
     def subrename(self, name: str, new_name: str) -> None:
         """Renames SubTextures of a certain name from the Atlas."""
@@ -304,6 +361,21 @@ class Atlas:
             return self.subtextures.pop(idx)
         return None
 
+    def delete(self, name: str):
+        sub,idx = self.match(name)
+        if sub is None:
+            logger.warning("Subtexture not found for deletion: %s", name)
+            return
+
+        if sub.is_disabled:
+            logger.info("Atlas.delete(): Subtexture %s is already marked for deletion. Undoing.")
+            sub.is_disabled = False
+        else:
+            if sub.vanilla:
+                sub.is_disabled = True # vanilla; mark only for skip at save time
+            else:
+                self.subtextures.pop(idx) # custom; remove it.
+
     def replace(self, name: str, image: Image.Image) -> None:
         """Finds SubTexture object of 'name' and replaces its 'img' field with a provided image"""
         sub,_ = self.match(name)
@@ -312,21 +384,18 @@ class Atlas:
 
     def update(self, atlas: Atlas):
         """Update self modifications against another Atlas object by finding diffs."""
-        for sub in atlas.allSubs():
-            if self.match(sub.name)[0] is None: # is unique to updater/delta; addition
-                target = self.additions
-            else:
-                target = self.replacements
-
-            existing = next((idx for idx,s in enumerate(target) if isinstance(s, SubTexture) and s.name==sub.name), None)
-            if existing is not None:
-                target.pop(existing)
+        for sub in atlas.subtextures:
+            sub.parent = atlas.name
 
             if sub.image is None:
-                sub.parent = atlas.name
-                sub.image = atlas.texture.crop(sub.box())
+                sub.crop_from(atlas)
 
-            target.append(sub)
+            existing = self.match(sub.name)[0]
+
+            if existing is not None:
+                existing.override = sub
+            else: # is unique to updater/delta; addition
+                self.add(sub)
 
     # region Creating
     @classmethod
@@ -335,6 +404,7 @@ class Atlas:
         for layout in layouts:
             yield Atlas(
                 name=layout.name,
+                vanilla=True,
                 parent=parent,
                 subtextures=[
                     SubTexture(
@@ -383,6 +453,7 @@ class Atlas:
 
             yield name, Atlas(
                 name=name,
+                vanilla=True,
                 texture=tex,
                 parent=parent_file,
                 subtextures=subtextures,
@@ -398,8 +469,8 @@ class Atlas:
             dcx_type=dcx_type).write((output / self.name).with_suffix(".tpf"))
         logger.info("Wrote standalone file with compression '%s':\n%s", dcx_type.name, output/self.name)
 
-    def compileTexture(self, alpha_threshold: int = 0) -> Image.Image:
-        """Builds new Image() from self, applying all modifications."""
+    def compileTexture(self) -> Image.Image:
+        """Builds new Image() from self, applying all modifications. Does NOT clean by alpha."""
         IMG = self.viewable
 
         for add in self.additions:
@@ -415,15 +486,16 @@ class Atlas:
 
             add.paste_into(IMG)
 
-        last_full_replacement = findLast(self.replacements, Image.Image)
-        if last_full_replacement is not None: # replacements contain an Image() object, entire atlas will be replaced
-            IMG = self.replacements[last_full_replacement]
+        if self.override is not None:
+            IMG = self.override
         else: # no full replacements, append subtexture replacements
             for rep in self.replacements:
-                rep.paste_into(IMG)
+                rep.paste_into(IMG)                    
 
+        ''' # removed due to circular import
         if alpha_threshold > 0: # zero RGB values with alpha 0
             IMG = cleanByAlpha(IMG, threshold=alpha_threshold)
+        '''
 
         return IMG
 
@@ -445,15 +517,23 @@ class Atlas:
 
     # region Delta
     def getDelta(self, vanilla: Optional[Atlas] = None) -> "Atlas":
-        """Creates delta of 2 Atlases, comparing self to vanilla."""
+        """Creates delta of 2 Atlases, comparing self to vanilla. If vanilla is None, return changes."""
         if vanilla is None:
-            subtextures = self.mergeChanges()
-            return Atlas(
+            atlas = Atlas(
                 name=self.name,
                 parent=self.parent,
-                texture=self.compileTexture(),
-                subtextures=subtextures
-            ) if subtextures else None
+                is_disabled=self.is_disabled
+            )
+
+            if not self.is_disabled:
+                subtextures = self.mergeChanges()
+                if not subtextures:
+                    return None
+                
+                atlas.texture = self.compileTexture()
+                atlas.subtextures = subtextures
+            
+            return atlas
 
         if vanilla.filename != self.filename:
             logger.warning("%s.getDelta(%s): Attempted to find diff between 2 files without matching parents, skipping.", self.name, vanilla.name)
@@ -474,7 +554,8 @@ class Atlas:
             name=self.name,
             parent=self.parent,
             texture=self.compileTexture(),
-            subtextures=subtextures
+            subtextures=subtextures,
+            is_disabled=self.is_disabled
         )
 
     @staticmethod
@@ -525,7 +606,7 @@ class Atlas:
     def readDeltaFile(cls, file: Path) -> list['Atlas']:
         with open(file, 'rb') as f:
             (count,) = struct.unpack("<I", f.read(4))
-
+            logger.info("Reading %i entries from delta %s", count, file.name)
             return [
                 cls.from_file(f)
                 for _ in range(count)
@@ -542,18 +623,21 @@ class Atlas:
         result += struct.pack("<I", len(parent))
         result += parent
 
-        image_buffer = BytesIO()
-        self.texture.save(image_buffer, format="PNG")
-        image_data = image_buffer.getvalue()
+        result += struct.pack("<B", self.is_disabled)
 
-        result += struct.pack("<I", len(image_data))
-        result += image_data
+        if not self.is_disabled:
+            image_buffer = BytesIO()
+            self.texture.save(image_buffer, format="PNG")
+            image_data = image_buffer.getvalue()
 
-        result += struct.pack("<I", len(self.subtextures))
-        for sub in self.subtextures:
-            sub_data = sub.to_bytes()
-            result += struct.pack("<I", len(sub_data))
-            result += sub_data
+            result += struct.pack("<I", len(image_data))
+            result += image_data
+
+            result += struct.pack("<I", self.count)
+            for sub in self.subtextures:
+                sub_data = sub.to_bytes()
+                result += struct.pack("<I", len(sub_data))
+                result += sub_data
 
         return bytes(result)
 
@@ -565,25 +649,29 @@ class Atlas:
         (parent_length,) = struct.unpack("<I", f.read(4))
         parent = Path(f.read(parent_length).decode("utf-8"))
 
-        (image_length,) = struct.unpack("<I", f.read(4))
-        image_data = f.read(image_length)
-        image = Image.open(BytesIO(image_data))
-        image.load()
+        (is_disabled,) = struct.unpack("<B", f.read(1))
 
-        subtextures = []
+        image=None
+        subtextures=[]
+        if not is_disabled:
+            (image_length,) = struct.unpack("<I", f.read(4))
+            image_data = f.read(image_length)
+            image = Image.open(BytesIO(image_data)).convert("RGBA")
+            image.load()
 
-        (count,) = struct.unpack("<I", f.read(4))
-        for _ in range(count):
-            (subtexture_length,) = struct.unpack("<I", f.read(4))
-            subtexture_data = f.read(subtexture_length)
+            (count,) = struct.unpack("<I", f.read(4))
+            for _ in range(count):
+                (subtexture_length,) = struct.unpack("<I", f.read(4))
+                subtexture_data = f.read(subtexture_length)
 
-            subtextures.append(SubTexture.from_bytes(subtexture_data))
+                subtextures.append(SubTexture.from_bytes(subtexture_data))
 
         return cls(
             name=name,
             parent=parent,
             texture=image,
             subtextures=subtextures,
+            is_disabled=is_disabled
         )
 
     def __repr__(self) -> str:
@@ -595,6 +683,7 @@ class Atlas:
             f"    Dimensions = {self.dimensions}\n"
             f"    Queued Additions = {len(self.additions)}\n"
             f"    Queued Replacements = {len(self.replacements)}\n"
+            f"    Is Disabled = {bool(self.is_disabled)}\n"
             f"    Texture = \n{indent(self.texture.__repr__(), "        ")}\n" 
            # f"    Subtextures = \n{indent(self.subtextures.__repr__(), "        ")}\n"
             f")"
@@ -609,13 +698,17 @@ class SubTexture:
     width: int
     height: int
 
+    override: Optional[SubTexture] = None # self replacement.
+
     image: Optional[Image.Image] = None # is None for vanilla subtextures as can just be cropped from parent Atlas
 
     parent: Optional[str] = None # name of parent atlas
-    vanilla: Optional[bool] = False # set to True on load. Custom additions are False, and therefore can be filtered for 
+    vanilla: bool = False # set to True on load. Custom additions are False, and therefore can be filtered for 
 
     blank: bool = False
-    flag_half: Optional[bool] = False # what even is this bro
+    flag_half: bool = False # what even is this bro
+
+    is_disabled: bool = False # DSTS flag to skip adding this subtexture to layouts when saving
 
     @property
     def pos(self) -> tuple[int, int]:
@@ -625,6 +718,16 @@ class SubTexture:
     def size(self) -> tuple[int, int]:
         return (self.width, self.height)
 
+    @property
+    def absolute(self):
+        if self.override is not None:
+            return self.override
+        return self
+
+    @property
+    def modified(self) -> bool:
+        return (self.override or not self.vanilla or self.is_disabled)
+
     def setpos(self, x, y):
         self.x = x
         self.y = y
@@ -632,24 +735,36 @@ class SubTexture:
     def rename(self, new_name):
         self.name = new_name
 
+    def revert(self):
+        self.override = None
+        self.is_disabled = False
+
     def box(self, padding: int = 0) -> tuple[int, int, int, int]:
         """Return tuple of coordinates for a box to crop to this subtexture. Allows optional padding"""
         return (self.x - padding, self.y - padding, self.x + self.width + padding, self.y + self.height + padding)
     
-    def paste_into(self, image: Image.Image, mask: Image.Image | None = None) -> None:
+    def paste_into(self, image: Image.Image, mask: Image.Image | None = None) -> bool:
         """Pastes self into an image"""
-        if self.image is None:
-            raise Exception("SubTexture object does not contain an image.")
-        image.paste(self.image, self.pos, mask=mask)
+        sub_image = self.absolute.image
+        if sub_image is None:
+            logger.warning("paste_into(): SubTexture %s does not contain an image.", self.name)
+            raise Exception("SubTexture does not contain an image.")
+        image.paste(im=sub_image, box=self.box(), mask=mask)
+
+    def crop_from(self, parent: Atlas):
+        self.image = parent.viewable.crop(self.box())
 
     def to_bytes(self) -> bytes:
         result = bytearray()
+        tar = self.absolute
 
-        name = self.name.encode("utf-8")
+        name = tar.name.encode("utf-8")
         result += struct.pack("<I", len(name))
         result += name
 
-        result += struct.pack("<iiii", self.x, self.y, self.width, self.height)
+        result += struct.pack("<iiii", tar.x, tar.y, tar.width, tar.height)
+
+        result += struct.pack("<B", self.is_disabled)
 
         return bytes(result)
 
@@ -662,12 +777,15 @@ class SubTexture:
 
         x, y, width, height = struct.unpack("<iiii", f.read(16))
 
+        (is_disabled,) = struct.unpack("<B", f.read(1))
+
         return cls(
             name=name,
             x=x,
             y=y,
             width=width,
             height=height,
+            is_disabled=is_disabled
         )
 
     def __repr__(self) -> str:
@@ -681,6 +799,8 @@ class SubTexture:
             f"    Dimensions = {self.width}x{self.height}\n"
             f"    Blank = {self.blank}\n"
             f"    Half = {self.flag_half}\n"
+            f"    Is Disabled = {self.is_disabled}\n"
+            f"    Override = {self.override}\n"
             f")"
         )
     

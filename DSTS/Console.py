@@ -4,8 +4,8 @@ import logging
 from pprint import pformat
 from pathlib import Path
 from copy import deepcopy
-from DSTextureStudio.Dataclasses import Command
-from DSTextureStudio.log_utils import format_exc_clean, formatter
+from DSTS.Dataclasses import Command
+from DSTS.log_utils import format_exc_clean, formatter
 from soulstruct.containers.tpf import TPFPlatform
 from soulstruct.base.textures.dds import DDS
 from soulstruct.base.textures.dds.swizzle import swizzle_dds_bytes_ps4

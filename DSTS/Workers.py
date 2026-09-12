@@ -15,11 +15,11 @@ from soulstruct.containers.tpf import TPF, TPFPlatform, TPFTexture, TPF_TEXTURE_
 from soulstruct.dcx import core, oodle
 from soulstruct.games import Game, get_game, BLOODBORNE, NIGHTREIGN, DEMONS_SOULS
 # Custom
-from DSTextureStudio.Dataclasses import AtlasLayout, Atlas, SubTexture
-from DSTextureStudio.Enums import ExportMode, GameType, WriteTask
-from DSTextureStudio.Helpers import createDebugGrid
-from DSTextureStudio.log_utils import format_exc_clean
-from DSTextureStudio.Utilities import replaceTerms, loadJson
+from DSTS.Dataclasses import AtlasLayout, Atlas, SubTexture
+from DSTS.Enums import ExportMode, GameType, WriteTask
+from DSTS.Helpers import createDebugGrid
+from DSTS.log_utils import format_exc_clean
+from DSTS.Utilities import replaceTerms, loadJson
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ class LoadWorker(QObject):
                 # add any textures that were not included in the layout
                 for texture in textures:
                     name = texture.stem
-                    atlases[name] = Atlas(name=name, texture=texture, parent=file, subtextures=[]) # no layout info since single textures go to atlases
+                    atlases[name] = Atlas(name=name, vanilla=True, texture=texture, parent=file, subtextures=[]) # no layout info since single textures go to atlases
                 logger.info("Successfully loaded %i atlases with no layouts.", len(atlases))
 
         logger.info("Load Worker process completed succesfully!")
@@ -146,7 +146,7 @@ class LoadWorker(QObject):
 
             for texture in textures:
                 name = texture.stem
-                atlases[name] = Atlas(name=name, texture=texture, parent=file, subtextures=[])
+                atlases[name] = Atlas(name=name, vanilla=True, texture=texture, parent=file, subtextures=[])
                 dds = texture.get_dds()
                 image = Image.open(BytesIO(dds.to_bytes())).convert("RGBA")
 
@@ -301,6 +301,10 @@ class WriteWorker(QObject):
         is_reuse = False
 
         for atlas in self.new_atlases:
+            if atlas.is_disabled:
+                logger.debug("WriteWorker.handle_new_atlases(): Skipping disabled standalone Atlas %s", atlas.name)
+                continue
+
             if atlas.parent is not None:
                 tasks.append(atlas)
                 continue
@@ -331,17 +335,29 @@ class WriteWorker(QObject):
             }
 
             for atlas in self.atlases.values():
-                additions = atlas.additions
-                if not additions:
+                if atlas.is_disabled:
+                    logger.debug("WriteWorker.processLayouts(): Removing disabled standalone Atlas %s", atlas.name)
+                    layout_map.pop(atlas.name)
                     continue
 
+                additions = atlas.additions
                 existing_layout = layout_map.get(atlas.name)
 
                 if existing_layout:
-                    logger.info("Adding %i subtexture(s) to existing layout '%s'", len(additions), atlas.name)
-                    existing_layout.add_subtextures(additions)
+                    if additions:
+                        logger.info("Adding %i subtexture(s) to existing layout '%s'", len(additions), atlas.name)
+                        existing_layout.add(additions)
+
+                    for sub in atlas.disabled:
+                        existing_layout.rem(sub.name)
+
+                    for sub in atlas.replacements:
+                        existing_layout.mod(sub)
 
                 else:
+                    if not additions:
+                        continue
+                    
                     logger.info("Creating layout entry for '%s' with %i subtexture(s)", atlas.name, len(additions))
                     first_obj: AtlasLayout = layout_objs[0] # dummy used to fetch common info
 
@@ -358,12 +374,11 @@ class WriteWorker(QObject):
                         dimensions=dims
                     )
 
-                    layout_objs.append(new_layout)
-                    layout_map[atlas.name] = new_layout
+                    layout_map[atlas.name] = new_layout                    
 
             file = dcx_path.name.replace('.tpf.dcx', '.sblytbnd.dcx')
             AtlasLayout.build(
-                layout_objs=layout_objs,
+                layout_objs=layout_map.values(),
                 output=self.output_dir / file
             )
             logger.info("Successfully wrote file: %s", file)
@@ -385,16 +400,21 @@ class WriteWorker(QObject):
                 base.dcx_type = dcx_type
 
             for atlas in new_atlases: # returns list of those with parents. Parentless files are written alone, not in a binder.
-                if atlas.parent != base_path:
+                if atlas.parent != base_path or atlas.is_disabled:
                     continue
 
                 atlas.add_to_TPF(base, swizzle=(self.game == BLOODBORNE))
 
             for atlas in self.atlases.values():
+                if atlas.is_disabled:
+                    tex = base.find_texture_stem(atlas.name)
+                    del tex
+                    continue
+
                 if (atlas.parent != base_path) or (not atlas.modified):
                     continue
 
-                compiled_image = atlas.compileTexture(self.alphaThreshold)
+                compiled_image = atlas.compileTexture()
 
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                     temp_path = tmp.name

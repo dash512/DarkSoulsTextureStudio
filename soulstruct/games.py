@@ -29,7 +29,7 @@ from soulstruct.config import *
 from soulstruct.dcx import DCXType
 from soulstruct.utilities.files import SOULSTRUCT_PATH
 
-from DSTextureStudio.Enums import GameType # NOTE: added in DSTS (duh)
+from DSTS.Enums import GameType # NOTE: added in DSTS (duh)
 
 @dataclass(slots=True, frozen=True)
 class Game:
