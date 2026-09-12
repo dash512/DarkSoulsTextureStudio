@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, Signal
 # Soulstruct
 from soulstruct.containers.tpf import TPF, TPFPlatform, TPFTexture, TPF_TEXTURE_FORMAT_TO_DXGI_FORMAT
 from soulstruct.dcx import core, oodle
-from soulstruct.games import Game, get_game, BLOODBORNE, NIGHTREIGN, DEMONS_SOULS
+from soulstruct.games import Game, BLOODBORNE, NIGHTREIGN, DEMONS_SOULS
 # Custom
 from DSTS.Dataclasses import AtlasLayout, Atlas, SubTexture
 from DSTS.Enums import ExportMode, GameType, WriteTask
@@ -407,8 +407,10 @@ class WriteWorker(QObject):
 
             for atlas in self.atlases.values():
                 if atlas.is_disabled:
-                    tex = base.find_texture_stem(atlas.name)
-                    del tex
+                    base.textures = [
+                        tex for tex in base.textures
+                        if tex.stem != atlas.name
+                    ]
                     continue
 
                 if (atlas.parent != base_path) or (not atlas.modified):

@@ -422,12 +422,14 @@ class TextureStudio(QMainWindow):
 
             menu = QMenu(self)
 
-            menu.addAction("Rename", lambda: self.renameAtlas(item))
+            # temporarily disabled until I can be arsed to fix exporting logic for it
+            #menu.addAction("Rename", lambda: self.renameAtlas(item))
 
             if modify == Modified.ADDED:
                 menu.addAction("Delete", lambda: self.deleteAtlas(item))
 
             elif modify == Modified.REPLACED:
+                menu.addAction("Rename", lambda: self.renameAtlas(item))
                 menu.addAction("Revert", lambda: self.revertAtlas(item))
 
             else:
