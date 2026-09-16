@@ -297,7 +297,7 @@ class TextureStudio(QMainWindow):
                 1: "Create Delta from diffs against a vanilla file",
                 2: "Create Delta from custom selection"
             },
-            default=1
+            default=0
         )
 
         if not dlg.exec():
@@ -348,7 +348,7 @@ class TextureStudio(QMainWindow):
         atlases = Atlas.readDeltaFile(file_path)
 
         for atlas in atlases:
-            if atlas.name not in self.atlases:
+            if atlas.name not in self.atlases: # new addition
                 dims = atlas.texture.size
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                     temp_path = tmp.name
@@ -469,7 +469,7 @@ class TextureStudio(QMainWindow):
             sub.override = None
 
         self.updateCache(atlas_name)
-        self.showSubtexture(sub_item)
+        self.showAtlas(atlas_item)
         self.reloadHighlighting()
 
     def editSubtexture(self, sub_item):
@@ -493,7 +493,6 @@ class TextureStudio(QMainWindow):
             return
 
         new = dlg.get_result()
-        new.crop_from(atlas)
         sub.override = new
 
         self.updateCache(atlas_name)
@@ -1401,8 +1400,8 @@ class TextureStudio(QMainWindow):
             return Modified.FALSE
 
         sub, _ = atlas.match(sub_name, _all=True)
-        if sub is not None:
-            if sub.is_disabled:
+        if sub is not None:            
+            if sub.absolute.is_disabled:
                 return Modified.DELETED
 
             if not sub.vanilla:

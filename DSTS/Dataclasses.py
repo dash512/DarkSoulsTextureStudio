@@ -311,7 +311,7 @@ class Atlas:
 
     def allSubs(self) -> list[SubTexture]:
         """Returns a single list of SubTextures defining the whole atlas. Built from modifications."""
-        return [sub.absolute for sub in self.subtextures]
+        return [sub for sub in self.subtextures]
 
     def mergeChanges(self) -> list[SubTexture]:
         """Returns combined list of all changes to the atlas."""
@@ -340,7 +340,7 @@ class Atlas:
         """Helper function to find SubTexture and index from self list"""
         attr = self.allSubs() if _all else self.subtextures
         for idx, sub in enumerate(attr):
-            if sub.name == name:
+            if sub.absolute.name == name:
                 return sub,idx
         return None, None
 
@@ -372,7 +372,7 @@ class Atlas:
             sub.is_disabled = False
         else:
             if sub.vanilla:
-                sub.is_disabled = True # vanilla; mark only for skip at save time
+                sub.setDisabled(True) # vanilla; mark only for skip at save time
             else:
                 self.subtextures.pop(idx) # custom; remove it.
 
@@ -385,11 +385,6 @@ class Atlas:
     def update(self, atlas: Atlas):
         """Update self modifications against another Atlas object by finding diffs."""
         for sub in atlas.subtextures:
-            sub.parent = atlas.name
-
-            if sub.image is None:
-                sub.crop_from(atlas)
-
             existing = self.match(sub.name)[0]
 
             if existing is not None:
@@ -625,19 +620,25 @@ class Atlas:
 
         result += struct.pack("<B", self.is_disabled)
 
+         # if any subtexture's replacement has an image, we need to add the texture
+        # to crop from. If none, there are only property replacements
+        is_need_texture = any([s.absimg is not None for s in self.subtextures])
+        result += struct.pack("<B", is_need_texture)        
+
         if not self.is_disabled:
-            image_buffer = BytesIO()
-            self.texture.save(image_buffer, format="PNG")
-            image_data = image_buffer.getvalue()
-
-            result += struct.pack("<I", len(image_data))
-            result += image_data
-
             result += struct.pack("<I", self.count)
             for sub in self.subtextures:
                 sub_data = sub.to_bytes()
                 result += struct.pack("<I", len(sub_data))
                 result += sub_data
+
+            if is_need_texture:
+                image_buffer = BytesIO()
+                self.texture.save(image_buffer, format="PNG")
+                image_data = image_buffer.getvalue()
+
+                result += struct.pack("<I", len(image_data))
+                result += image_data
 
         return bytes(result)
 
@@ -650,21 +651,23 @@ class Atlas:
         parent = Path(f.read(parent_length).decode("utf-8"))
 
         (is_disabled,) = struct.unpack("<B", f.read(1))
+        (has_texture,) = struct.unpack("<B", f.read(1))
 
         image=None
         subtextures=[]
         if not is_disabled:
-            (image_length,) = struct.unpack("<I", f.read(4))
-            image_data = f.read(image_length)
-            image = Image.open(BytesIO(image_data)).convert("RGBA")
-            image.load()
-
             (count,) = struct.unpack("<I", f.read(4))
             for _ in range(count):
                 (subtexture_length,) = struct.unpack("<I", f.read(4))
                 subtexture_data = f.read(subtexture_length)
 
                 subtextures.append(SubTexture.from_bytes(subtexture_data))
+            
+            if has_texture:
+                (image_length,) = struct.unpack("<I", f.read(4))
+                image_data = f.read(image_length)
+                image = Image.open(BytesIO(image_data)).convert("RGBA")
+                image.load()
 
         return cls(
             name=name,
@@ -725,8 +728,25 @@ class SubTexture:
         return self
 
     @property
+    def absimg(self):
+        if self.override is None or self.override.image is None:
+            sub_image = self.image
+        else:
+            sub_image = self.override.image
+
+        if sub_image is None:
+            return None
+
+        return sub_image
+
+    @property
     def modified(self) -> bool:
         return (self.override or not self.vanilla or self.is_disabled)
+
+    def setDisabled(self, disabled: bool):
+        self.is_disabled = disabled
+        if self.override is not None:
+            self.override.is_disabled = disabled
 
     def setpos(self, x, y):
         self.x = x
@@ -745,12 +765,15 @@ class SubTexture:
     
     def paste_into(self, image: Image.Image, mask: Image.Image | None = None) -> bool:
         """Pastes self into an image"""
-        sub_image = self.absolute.image
-        if sub_image is None:
-            logger.warning("paste_into(): SubTexture %s does not contain an image.", self.name)
-            raise Exception("SubTexture does not contain an image.")
-        image.paste(im=sub_image, box=self.box(), mask=mask)
+        sub_image = self.absimg
 
+        if sub_image is None:
+            logger.debug("paste_into(): SubTexture %s has no available image. Skipping paste.", self.name)
+            return False
+        
+        image.paste(im=sub_image, box=self.box(), mask=mask)
+        return True
+    
     def crop_from(self, parent: Atlas):
         self.image = parent.viewable.crop(self.box())
 
@@ -800,7 +823,7 @@ class SubTexture:
             f"    Blank = {self.blank}\n"
             f"    Half = {self.flag_half}\n"
             f"    Is Disabled = {self.is_disabled}\n"
-            f"    Override = {self.override}\n"
+            f"    Has Override = {self.override is not None}\n"
             f")"
         )
     

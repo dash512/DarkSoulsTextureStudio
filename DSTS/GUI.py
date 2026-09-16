@@ -547,11 +547,14 @@ class DefineSubtexturePrompt(QDialog):
 
         return SubTexture(
             name=name,
+            parent=self.st.parent,
             width=self.width_input.value(), 
             height=self.height_input.value(),
             x=self.x_input.value(), 
             y=self.y_input.value(),
-            flag_half=half
+            vanilla=self.st.vanilla,
+            flag_half=half,
+            is_disabled=self.st.is_disabled
         )
 
 class CompressionPrompt(QDialog):
